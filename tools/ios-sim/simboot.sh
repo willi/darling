@@ -28,16 +28,22 @@ D="$SIM_DEVICE_DATA"
 # the device's name in Darling's bootstrap namespace, which simspawn and the runtime's libxpc look up
 NAME="com.apple.CoreSimulator.SimDevice.$SIM_UDID"
 JOB="$D/var/run/$NAME.plist"
-# launchd_sim's own log, in the temporary state directory it makes
+# launchd_sim's own log, in the temporary state directory it makes, and its line once the device has booted
 LOG="/private/var/tmp/$NAME/launchd.log"
+BOOTED='(system) <Notice>: exiting bootstrap mode'
 
 if [ $# -gt 0 ]; then
 	echo "usage: SIM_RUNTIME_ROOT=<RuntimeRoot> $0" >&2
 	exit 64
 fi
 if launchctl list "$NAME" >/dev/null 2>&1; then
-	echo "$NAME is already booted" >&2
-	exit 0
+	if grep -qF "$BOOTED" "$LOG" 2>/dev/null; then
+		echo "$NAME is already booted" >&2
+		exit 0
+	fi
+	# its job can't be unloaded yet (see above)
+	echo "$NAME is loaded but didn't finish booting; see $LOG. Stop Darling to try again." >&2
+	exit 1
 fi
 
 mkdir -p "$D/tmp" "$D/Library/Logs" "$D/var/run/LaunchDaemons"
@@ -46,25 +52,30 @@ for label in $SIM_DAEMONS; do
 	ln -s "$R/System/Library/LaunchDaemons/$label.plist" "$D/var/run/LaunchDaemons/"
 done
 
+# a value as plist XML text
+x() {
+	printf '%s' "$1" | sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g'
+}
+
 # the environment CoreSimulator gives launchd_sim ("Self") and its jobs ("Child")
 env_dict() {
 	cat <<EOF
-<key>DYLD_ROOT_PATH</key><string>$R</string>
-<key>SIMULATOR_ROOT</key><string>$R</string>
-<key>IPHONE_SIMULATOR_ROOT</key><string>$R</string>
-<key>SIMULATOR_RUNTIME_VERSION</key><string>$SIM_RUNTIME_VERSION</string>
-<key>SIMULATOR_RUNTIME_BUILD_VERSION</key><string>$SIM_RUNTIME_BUILD_VERSION</string>
-<key>SIMULATOR_UDID</key><string>$SIM_UDID</string>
-<key>SIMULATOR_DEVICE_NAME</key><string>$SIM_DEVICE_NAME</string>
-<key>SIMULATOR_MODEL_IDENTIFIER</key><string>$SIM_MODEL_IDENTIFIER</string>
-<key>SIMULATOR_PRODUCT_CLASS</key><string>$SIM_PRODUCT_CLASS</string>
-<key>SIMULATOR_SHARED_RESOURCES_DIRECTORY</key><string>$D</string>
-<key>SIMULATOR_LOG_ROOT</key><string>$D/Library/Logs</string>
-<key>SIMULATOR_HOST_HOME</key><string>$HOME</string>
-<key>HOME</key><string>$D</string>
-<key>CFFIXED_USER_HOME</key><string>$D</string>
-<key>TMPDIR</key><string>$D/tmp/</string>
-<key>XPC_SIMULATOR_LAUNCHD_NAME</key><string>$NAME</string>
+<key>DYLD_ROOT_PATH</key><string>$(x "$R")</string>
+<key>SIMULATOR_ROOT</key><string>$(x "$R")</string>
+<key>IPHONE_SIMULATOR_ROOT</key><string>$(x "$R")</string>
+<key>SIMULATOR_RUNTIME_VERSION</key><string>$(x "$SIM_RUNTIME_VERSION")</string>
+<key>SIMULATOR_RUNTIME_BUILD_VERSION</key><string>$(x "$SIM_RUNTIME_BUILD_VERSION")</string>
+<key>SIMULATOR_UDID</key><string>$(x "$SIM_UDID")</string>
+<key>SIMULATOR_DEVICE_NAME</key><string>$(x "$SIM_DEVICE_NAME")</string>
+<key>SIMULATOR_MODEL_IDENTIFIER</key><string>$(x "$SIM_MODEL_IDENTIFIER")</string>
+<key>SIMULATOR_PRODUCT_CLASS</key><string>$(x "$SIM_PRODUCT_CLASS")</string>
+<key>SIMULATOR_SHARED_RESOURCES_DIRECTORY</key><string>$(x "$D")</string>
+<key>SIMULATOR_LOG_ROOT</key><string>$(x "$D/Library/Logs")</string>
+<key>SIMULATOR_HOST_HOME</key><string>$(x "$HOME")</string>
+<key>HOME</key><string>$(x "$D")</string>
+<key>CFFIXED_USER_HOME</key><string>$(x "$D")</string>
+<key>TMPDIR</key><string>$(x "$D/tmp/")</string>
+<key>XPC_SIMULATOR_LAUNCHD_NAME</key><string>$(x "$NAME")</string>
 EOF
 }
 
@@ -77,8 +88,8 @@ cat >"$D/var/run/launchd_bootstrap.plist" <<EOF
 <key>Bootstrap</key><dict>
 <key>Self</key><dict>$(env_dict)</dict>
 <key>Child</key><dict>$(env_dict)</dict>
-<key>Paths</key><array><string>$D/var/run/LaunchDaemons</string></array>
-<key>SimulatorRuntimeRoot</key><string>$R</string>
+<key>Paths</key><array><string>$(x "$D/var/run/LaunchDaemons")</string></array>
+<key>SimulatorRuntimeRoot</key><string>$(x "$R")</string>
 </dict>
 </dict></plist>
 EOF
@@ -88,16 +99,16 @@ cat >"$JOB" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
-<key>Label</key><string>$NAME</string>
-<key>MachServices</key><dict><key>$NAME</key><dict><key>ResetAtClose</key><true/></dict></dict>
+<key>Label</key><string>$(x "$NAME")</string>
+<key>MachServices</key><dict><key>$(x "$NAME")</key><dict><key>ResetAtClose</key><true/></dict></dict>
 <key>ProgramArguments</key><array>
-<string>$R/sbin/launchd_sim_trampoline</string>
-<string>$R/sbin/launchd_sim</string>
-<string>$D/var/run/launchd_bootstrap.plist</string>
+<string>$(x "$R/sbin/launchd_sim_trampoline")</string>
+<string>$(x "$R/sbin/launchd_sim")</string>
+<string>$(x "$D/var/run/launchd_bootstrap.plist")</string>
 </array>
 <key>RunAtLoad</key><true/>
-<key>StandardOutPath</key><string>$D/Library/Logs/launchd_sim.log</string>
-<key>StandardErrorPath</key><string>$D/Library/Logs/launchd_sim.log</string>
+<key>StandardOutPath</key><string>$(x "$D/Library/Logs/launchd_sim.log")</string>
+<key>StandardErrorPath</key><string>$(x "$D/Library/Logs/launchd_sim.log")</string>
 </dict></plist>
 EOF
 
@@ -105,7 +116,7 @@ rm -f "$LOG"
 launchctl load "$JOB"
 
 i=0
-until grep -q '(system) <Notice>: exiting bootstrap mode' "$LOG" 2>/dev/null; do
+until grep -qF "$BOOTED" "$LOG" 2>/dev/null; do
 	i=$((i + 1))
 	if [ "$i" -gt "$SIM_BOOT_TIMEOUT" ]; then
 		echo "$NAME didn't finish booting in ${SIM_BOOT_TIMEOUT}s; see $LOG and $D/Library/Logs/launchd_sim.log" >&2
