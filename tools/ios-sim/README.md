@@ -41,7 +41,9 @@ Device data defaults to `~/Library/Developer/CoreSimulator/Devices/<udid>/data`.
   `pthread_install_workgroup_functions_np`) are implemented or stubbed.
 - Apple's libdispatch always runs in kevent-workqueue mode, and every serial queue is an XNU workloop. Darling's
   `libsystem_kernel` emulates both (`kevent_qos(KEVENT_FLAG_WORKQ)` and `kevent_id`) on libkqueue and its
-  workqueue threads, following XNU's `kern_event.c`.
+  workqueue threads, following XNU's `kern_event.c`. Darling's own libdispatch uses neither, so
+  `tests/src/workq_kevent.c` drives them directly, without libdispatch: configure with `-DENABLE_TESTS=ON`, build the
+  `workq_kevent` target and run `darling shell /usr/libexec/darling-tests/workq_kevent` (it prints TAP-style lines).
 - darlingserver provides the Mach voucher pieces libdispatch relies on: activity IDs, the voucher traps, and a BANK
   voucher attribute manager. The BANK manager is ported from XNU's `bank.c` without ledgers, thread groups or
   personas.
