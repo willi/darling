@@ -483,3 +483,7 @@ if (COMPONENT_jsc)
 endif()
 
 #add_subdirectory(external/WebCore)
+
+if (ENABLE_TESTS)
+	add_subdirectory(${CMAKE_SOURCE_DIR}/tests ${CMAKE_BINARY_DIR}/tests)
+endif()

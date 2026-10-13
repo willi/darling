@@ -4,8 +4,11 @@ Apple's iOS Simulator runtimes (`iOS <version>.simruntime`) are x86_64 Mach-O us
 kernel through `dyld_sim`. Under Darling they run unmodified: Darling's `libsystem_kernel`, `libsystem_platform` and
 `libsystem_pthread` play the host libraries that the runtime's `libsystem_sim_*` shims re-export.
 
-Status: command-line tools from the iOS 26.5 runtime (e.g. `usr/bin/tab2space`) run to completion. Foundation and
-UIKit processes have not been tried yet.
+Status, with the iOS 26.5 runtime:
+- command-line tools such as `usr/bin/tab2space` run to completion;
+- Foundation/XPC clients such as `usr/bin/defaults read` run to completion. Writing preferences fails ("Could not
+  write domain"), because nothing serves the simulator's `cfprefsd` yet: on a Mac, `launchd_sim` starts it;
+- UIKit processes have not been tried yet.
 
 ## Usage
 
@@ -36,3 +39,11 @@ Device data defaults to `~/Library/Developer/CoreSimulator/Devices/<udid>/data`.
   libdispatch while it initializes.
 - SPIs the runtime imports from the host libraries (e.g. `mach_msg2_internal`, `mkfifoat`, `memcmp_zero`,
   `pthread_install_workgroup_functions_np`) are implemented or stubbed.
+- Apple's libdispatch always runs in kevent-workqueue mode, and every serial queue is an XNU workloop. Darling's
+  `libsystem_kernel` emulates both (`kevent_qos(KEVENT_FLAG_WORKQ)` and `kevent_id`) on libkqueue and its
+  workqueue threads, following XNU's `kern_event.c`. Darling's own libdispatch uses neither, so
+  `tests/src/workq_kevent.c` drives them directly, without libdispatch: configure with `-DENABLE_TESTS=ON`, build the
+  `workq_kevent` target and run `darling shell /usr/libexec/darling-tests/workq_kevent` (it prints TAP-style lines).
+- darlingserver provides the Mach voucher pieces libdispatch relies on: activity IDs, the voucher traps, and a BANK
+  voucher attribute manager. The BANK manager is ported from XNU's `bank.c` without ledgers, thread groups or
+  personas.
