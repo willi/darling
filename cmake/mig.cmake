@@ -1,3 +1,6 @@
+# callers can check that mig() honours MIG_EXTRA_FLAGS
+set(MIG_SUPPORTS_EXTRA_FLAGS TRUE)
+
 function(mig defFileName)
         set(MIG_EXECUTABLE "${CMAKE_BINARY_DIR}/build-mig")
 
@@ -27,6 +30,9 @@ function(mig defFileName)
         foreach (dir ${InclDirs})
                 set(MIG_FLAGS "${MIG_FLAGS} -I${dir}")
         endforeach()
+
+        # extra migcom options from the caller, e.g. -novouchers
+        set(MIG_FLAGS "${MIG_FLAGS} ${MIG_EXTRA_FLAGS}")
 
         # message(STATUS "MIG flags: ${MIG_FLAGS}")
         separate_arguments(MIG_FLAGS)
