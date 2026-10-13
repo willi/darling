@@ -995,10 +995,10 @@ void setupPrefix()
 		"/private/var/log",
 		"/private/var/db",
 		"/private/etc",
-		"/var",
-		"/var/run",
-		"/var/tmp",
-		"/var/log"
+		// /var is the installed symlink to private/var, as on macOS. A /var directory here would hide it, leaving
+		// /var/tmp and /private/var/tmp different directories.
+		"/private/var/run",
+		"/private/var/tmp",
 	};
 
 	fprintf(stderr, "Setting up a new Darling prefix at %s\n", prefix);
