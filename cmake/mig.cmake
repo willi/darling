@@ -1,3 +1,6 @@
+# callers can check that mig() honours MIG_EXTRA_FLAGS
+set(MIG_SUPPORTS_EXTRA_FLAGS TRUE)
+
 function(mig defFileName)
         set(MIG_EXECUTABLE "${CMAKE_BINARY_DIR}/build-mig")
 

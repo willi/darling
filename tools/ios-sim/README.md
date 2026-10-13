@@ -23,11 +23,13 @@ Device data defaults to `~/Library/Developer/CoreSimulator/Devices/<udid>/data`.
 
 ## What makes it work
 
-- `_libkernel_functions`: Apple's libSystem passes version 5, whose new fields sit where Darling appends its own
-  fields after version 4. Darling reads its fields only from a table passed by Darling's libSystem.
+- Darling's libSystem registers its extra callbacks with `libsystem_kernel` through `__libkernel_darling_init()`, so
+  `_libkernel_functions` keeps Apple's layout, whatever version Apple's libSystem passes. A process whose libSystem
+  did not register is running Apple's.
 - Processes running Apple's libSystem see a supported host `kern.osrelease` (24.6.0, macOS 15.6), since the runtime's
   `libsystem_sim_kernel` traps on hosts older than it supports. Darling's own processes still see the emulated
-  version.
+  version. The host version is set at build time (`SIMULATOR_HOST_*` in xnu's emulation `CMakeLists.txt`); a runtime
+  that requires a newer host needs it raised.
 - The three host libraries export no duplicate symbols: Apple's libSystem re-exports `libsystem_sim_kernel` first, so
   a duplicate in `libsystem_kernel` would shadow the real implementation in `libsystem_platform`/`libsystem_pthread`.
 - `libsystem_kernel`'s MIG stubs are built with `-novouchers`, as Apple does, so they do not call back into
