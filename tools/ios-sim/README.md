@@ -13,23 +13,26 @@ Status, with the iOS 26.5 runtime:
 
 ## Usage
 
-1. Extract a runtime (e.g. from Xcode's `iOS_<version>_Simulator_Runtime.dmg`). Do not modify its files: its code
+1. Build Darling with the `ios_sim` component (`-DCOMPONENTS=stock,ios_sim`, or `all`). It installs `simrun.sh`,
+   `simboot.sh` and `simspawn` in the prefix's `/usr/libexec/ios-sim`.
+2. Extract a runtime (e.g. from Xcode's `iOS_<version>_Simulator_Runtime.dmg`). Do not modify its files: its code
    signatures should keep verifying.
-2. Inside `darling shell`:
+3. Inside `darling shell`:
 
    ```sh
    SIM_RUNTIME_ROOT="/Volumes/SystemRoot/<path>/iOS 26.5.simruntime/Contents/Resources/RuntimeRoot" \
-     tools/ios-sim/simrun.sh usr/bin/tab2space < input.txt
+     /usr/libexec/ios-sim/simrun.sh usr/bin/tab2space < input.txt
    ```
 
 `simrun.sh` sets the environment CoreSimulator gives simulator processes (`SIMULATOR_*`, `HOME`, `TMPDIR`, ...).
 Device data defaults to `~/Library/Developer/CoreSimulator/Devices/<udid>/data`.
 
-`simrun.sh` runs a program on its own. To run it in a booted device instead, as `simctl spawn` does:
+`simrun.sh` runs a program on its own, outside any device: with no `cfprefsd` to talk to, `defaults read` works but
+`defaults write` fails. To run it in a booted device instead, as `simctl spawn` does:
 
 ```sh
 export SIM_RUNTIME_ROOT=...
-tools/ios-sim/simboot.sh
+/usr/libexec/ios-sim/simboot.sh
 /usr/libexec/ios-sim/simspawn usr/bin/defaults write com.example.test greeting hello
 /usr/libexec/ios-sim/simspawn usr/bin/defaults read com.example.test greeting
 ```
@@ -66,7 +69,7 @@ Not working yet:
   `tests/src/workq_kevent.c` drives them directly, without libdispatch: configure with `-DENABLE_TESTS=ON`, build the
   `workq_kevent` target and run `darling shell /usr/libexec/darling-tests/workq_kevent` (it prints TAP-style lines).
 - A booted device needs: fileports (`fileport_makeport`/`makefd`, held by darlingserver); `posix_spawn` port actions
-  that set special ports, including ports with immovable rights; `PSFA_FILEPORT_DUP2` file actions, which carry a
+  that set the bootstrap port, whose rights `launchd` makes immovable; `PSFA_FILEPORT_DUP2` file actions, which carry a
   job's stdio; local datagram sockets that fail with ENOBUFS when full, as XNU's do, rather than block (`launchd_sim`
   logs through one); `mach_vm_map()` of anonymous memory; and `__mac_syscall` answering the Sandbox checks as for an
   unsandboxed process (`sandbox_check()` allows; `sandbox_passthrough_access()` checks the file's permissions).

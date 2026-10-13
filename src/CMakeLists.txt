@@ -208,8 +208,10 @@ add_subdirectory(external/zlib)
 # so we include it in core to allow executables to be executed with the `darling` command.
 add_subdirectory(shellspawn)
 
-# runs programs in a booted iOS Simulator device (tools/ios-sim)
-add_subdirectory(ios-sim)
+# boots iOS Simulator devices and runs programs in them (tools/ios-sim)
+if (COMPONENT_ios_sim)
+	add_subdirectory(ios-sim)
+endif()
 
 # typically considered CLI components, but required by launchctl (which is necessary for launchd to bootstrap)
 add_subdirectory(external/libedit)
