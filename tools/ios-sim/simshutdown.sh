@@ -4,9 +4,12 @@
 # data stays for the next boot.
 #
 # usage: simshutdown.sh
+#
+# SIM_SHUTDOWN_TIMEOUT is how long to wait, in seconds (default: 30).
 set -eu
 # shellcheck source=simdevice.sh
 . "$(dirname "$0")/simdevice.sh"
+: "${SIM_SHUTDOWN_TIMEOUT:=30}"
 
 if [ $# -gt 0 ]; then
 	echo "usage: $0" >&2
@@ -17,6 +20,16 @@ if ! launchctl list "$SIM_DEVICE_JOB_LABEL" >/dev/null 2>&1; then
 	exit 0
 fi
 
-# returns once launchd_sim has exited
-launchctl unload "$SIM_DEVICE_JOB"
+# It returns once launchd_sim has exited, and exits 0 even when it failed: the job going away is what counts.
+launchctl unload "$SIM_DEVICE_JOB" &
+i=0
+while launchctl list "$SIM_DEVICE_JOB_LABEL" >/dev/null 2>&1; do
+	i=$((i + 1))
+	if [ "$i" -gt "$SIM_SHUTDOWN_TIMEOUT" ]; then
+		echo "$SIM_DEVICE_JOB_LABEL didn't shut down in ${SIM_SHUTDOWN_TIMEOUT}s; see $SIM_DEVICE_LOG" >&2
+		exit 1
+	fi
+	sleep 1
+done
+wait
 echo "shut down $SIM_DEVICE_JOB_LABEL"

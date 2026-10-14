@@ -80,10 +80,11 @@ Not working yet:
   Without the last, CFPreferences avoids `cfprefsd`, and `cfprefsd` refuses to write.
 - Shutting a device down needs: EVFILT_SIGNAL knotes that see every signal delivered to the process, whichever thread
   takes it and whatever its disposition, as XNU's do (libdispatch's signal sources, which `launchd_sim` stops on;
-  Darling's signal handler posts them, see `signal_knotes.h`); a thread that has exited, such as the main thread after
-  `dispatch_main()`, taking no more signals; `proc_terminate()`, which `launchd_sim` stops its daemons with; and a dead
-  process's port rights dying with it, as XNU's do, so that `launchd` gets the device's Mach service back.
-  `tests/src/kqueue_signal.c` checks the knotes (build the `kqueue_signal` target as `workq_kevent` above).
+  Darling's signal handlers post them; `signal_knotes.h` lists where they still differ from XNU's); a thread that has
+  exited, such as the main thread after `dispatch_main()`, taking no more signals; `proc_terminate()`, which
+  `launchd_sim` stops its daemons with; and a dead process's port rights dying with it, as XNU's do, so that `launchd`
+  gets the device's Mach service back. `tests/src/kqueue_signal.c` checks the knotes (build the `kqueue_signal` target
+  as `workq_kevent` above).
 - darlingserver provides the Mach voucher pieces libdispatch relies on: activity IDs, the voucher traps, and a BANK
   voucher attribute manager. The BANK manager is ported from XNU's `bank.c` without ledgers, thread groups or
   personas.
