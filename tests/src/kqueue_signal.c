@@ -39,12 +39,12 @@ static void handler(int sig)
 	handled++;
 }
 
-static int change(int kq, uint16_t flags)
+static bool change(int kq, uint16_t flags)
 {
 	struct kevent kev;
 
 	EV_SET(&kev, SIG, EVFILT_SIGNAL, flags, 0, 0, NULL);
-	return kevent(kq, &kev, 1, NULL, 0, NULL);
+	return kevent(kq, &kev, 1, NULL, 0, NULL) == 0;
 }
 
 // the event's data (the times the signal arrived), or -1 if none came within the timeout
@@ -75,21 +75,26 @@ static void* run(void* arg)
 	long data;
 	char detail[64];
 	pid_t pid;
-	int kq = kqueue();
+	int kq = kqueue(), kq2 = kqueue();
+	bool ok;
 
 	(void) arg;
-	pthread_create(&thread, NULL, receiver, NULL);
 	sigemptyset(&set);
 	sigaddset(&set, SIG);
+	// main() blocked it until it exited; now only the receiver takes it
+	usleep(200000);
+	pthread_sigmask(SIG_UNBLOCK, &set, NULL);
+	pthread_create(&thread, NULL, receiver, NULL);
+	pthread_sigmask(SIG_BLOCK, &set, NULL);
 
 	// Regression: Darling's EVFILT_SIGNAL read a signalfd, which only sees a signal that every thread blocks; one
-	// another thread took was lost (and with the main thread exited, took the process down instead).
+	// another thread took was lost. And the exited main thread took it without being able to handle it, which
+	// aborted the process ("dserver_rpc_interrupt_enter failed").
 	signal(SIG, SIG_IGN);
-	change(kq, EV_ADD);
-	pthread_sigmask(SIG_BLOCK, &set, NULL);
+	ok = change(kq, EV_ADD);
 	kill(getpid(), SIG);
 	data = wait_signal(kq, 5000);
-	check(data == 1, "an ignored signal another thread takes is recorded", "no event");
+	check(ok && data == 1, "an ignored signal another thread takes is recorded", "no event");
 
 	signal(SIG, handler);
 	kill(getpid(), SIG);
@@ -99,27 +104,36 @@ static void* run(void* arg)
 		usleep(10000);
 	check(data == 1 && handled == 1, "a handled signal is recorded and handled", "no event, or the handler didn't run");
 
+	// Each knote watching a signal records it, and deleting one leaves the others.
+	ok = change(kq2, EV_ADD);
+	kill(getpid(), SIG);
+	ok = ok && wait_signal(kq, 5000) == 1 && wait_signal(kq2, 5000) == 1;
+	ok = ok && change(kq2, EV_DELETE);
+	kill(getpid(), SIG);
+	ok = ok && wait_signal(kq, 5000) == 1 && wait_signal(kq2, 200) == -1;
+	check(ok, "every knote for a signal records it, until deleted", "a knote missed it, or recorded it after EV_DELETE");
+
 	// Regression: disabling a knote dropped it, so signals that arrived while libdispatch ran a source's handler
 	// (EV_DISPATCH) were lost.
 	signal(SIG, SIG_IGN);
-	change(kq, EV_ADD | EV_DISPATCH);
+	ok = change(kq, EV_DELETE) && change(kq, EV_ADD | EV_DISPATCH);
 	kill(getpid(), SIG);
-	data = wait_signal(kq, 5000);
+	ok = ok && wait_signal(kq, 5000) == 1;
 	// apart, or Linux merges the second into the first while it's pending (XNU would count both)
 	kill(getpid(), SIG);
 	usleep(100000);
 	kill(getpid(), SIG);
-	usleep(100000);
-	change(kq, EV_ENABLE);
+	ok = ok && wait_signal(kq, 200) == -1;
+	ok = ok && change(kq, EV_ENABLE);
 	data = wait_signal(kq, 5000);
 	snprintf(detail, sizeof(detail), "%ld after EV_ENABLE", data);
-	check(data == 2, "a disabled knote counts the signal until enabled", detail);
+	check(ok && data == 2, "a dispatched knote counts the signal until enabled again", detail);
 
-	change(kq, EV_DELETE);
+	ok = change(kq, EV_DELETE);
 	kill(getpid(), SIG);
-	check(wait_signal(kq, 200) == -1, "a deleted knote records nothing", "an event after EV_DELETE");
+	check(ok && wait_signal(kq, 200) == -1, "a deleted knote records nothing", "an event after EV_DELETE");
 
-	// A fork's child shares its parent's knote descriptors until it execs, but its signals aren't the parent's.
+	// A fork's child doesn't count its signals on its parent's knotes.
 	change(kq, EV_ADD);
 	pid = fork();
 	if (pid == 0)
@@ -139,7 +153,12 @@ static void* run(void* arg)
 int main(void)
 {
 	pthread_t thread;
+	sigset_t set;
 
+	// until it has exited: the threads inherit this, and run() unblocks it
+	sigemptyset(&set);
+	sigaddset(&set, SIG);
+	pthread_sigmask(SIG_BLOCK, &set, NULL);
 	pthread_create(&thread, NULL, run, NULL);
 	pthread_exit(NULL);
 }
