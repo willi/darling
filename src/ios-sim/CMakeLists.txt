@@ -9,6 +9,8 @@ install(TARGETS simspawn DESTINATION libexec/darling/usr/libexec/ios-sim COMPONE
 install(PROGRAMS
 	${CMAKE_SOURCE_DIR}/tools/ios-sim/simrun.sh
 	${CMAKE_SOURCE_DIR}/tools/ios-sim/simboot.sh
+	${CMAKE_SOURCE_DIR}/tools/ios-sim/simshutdown.sh
 	DESTINATION libexec/darling/usr/libexec/ios-sim
 	COMPONENT ios_sim
 )
+install(FILES ${CMAKE_SOURCE_DIR}/tools/ios-sim/simdevice.sh DESTINATION libexec/darling/usr/libexec/ios-sim COMPONENT ios_sim)

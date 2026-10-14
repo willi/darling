@@ -5,16 +5,11 @@
 #
 # SIM_RUNTIME_ROOT is the runtime's Contents/Resources/RuntimeRoot as seen from inside Darling, e.g.
 # "/Volumes/SystemRoot/<linux path>/iOS 26.5.simruntime/Contents/Resources/RuntimeRoot".
-# The other variables mirror what CoreSimulator gives simulator processes; override them as needed.
+# The other variables are in simdevice.sh.
 set -e
 : "${SIM_RUNTIME_ROOT:?set SIM_RUNTIME_ROOT to the RuntimeRoot of the runtime}"
-: "${SIM_RUNTIME_VERSION:=26.5}"
-: "${SIM_RUNTIME_BUILD_VERSION:=23F77}"
-: "${SIM_UDID:=4C0A1A5E-0000-4000-8000-000000000001}"
-: "${SIM_DEVICE_NAME:=Darling iPhone}"
-: "${SIM_MODEL_IDENTIFIER:=iPhone17,3}"
-: "${SIM_PRODUCT_CLASS:=D47}"
-: "${SIM_DEVICE_DATA:=$HOME/Library/Developer/CoreSimulator/Devices/$SIM_UDID/data}"
+# shellcheck source=simdevice.sh
+. "$(dirname "$0")/simdevice.sh"
 
 [ $# -ge 1 ] || { echo "usage: SIM_RUNTIME_ROOT=<RuntimeRoot> $0 <binary> [args...]" >&2; exit 64; }
 B="$1"; shift
