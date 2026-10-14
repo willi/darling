@@ -56,10 +56,10 @@ it, with the format strings `logd` saved for each binary, into a directory laid 
 
 ```sh
 /usr/libexec/ios-sim/simshutdown.sh
-/usr/libexec/ios-sim/simlogarchive.sh "/Volumes/SystemRoot$HOME/device.logarchive"
-# then, on Linux, from a macos-UnifiedLogs checkout:
+/usr/libexec/ios-sim/simlogarchive.sh ~/device.logarchive
+# then, on Linux (the prefix's home is ~/.darling/Users/<login>), from a macos-UnifiedLogs checkout:
 #   cargo run --release --manifest-path examples/unifiedlog_iterator/Cargo.toml -- \
-#     -m log-archive -i ~/device.logarchive -o device.jsonl
+#     -m log-archive -i ~/.darling/Users/$USER/device.logarchive -o device.jsonl
 ```
 
 `launchd_sim`'s messages are simple dumps, which the reader shows with no process: it looks their sender up in the

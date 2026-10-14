@@ -73,9 +73,11 @@ int main(void)
 			"the mapping sees what's written to the buffer after", (char*) view + vm_page_size * 3);
 	}
 
-	// a mapping for at most the entry's protection
+	// a mapping for at most the entry's protection, and it stays that way
 	kr = map_entry(entry, size, rw, &other);
 	check(kr == KERN_INVALID_RIGHT, "a read-only entry can't be mapped writable", mach_error_string(kr));
+	kr = mach_vm_protect(mach_task_self(), view, size, FALSE, rw);
+	check(kr != KERN_SUCCESS, "a read-only mapping can't be made writable", "it was");
 
 	// libdispatch shares its buffer again when it reconnects to logd; both entries must be the same memory
 	kr = make_entry(buffer, size, MAP_MEM_VM_SHARE | rw, &again);
@@ -121,6 +123,33 @@ int main(void)
 	}
 	else
 		check(false, "new memory is shared between its mappings", mach_error_string(kr));
+
+	// memory mapped where an entry's mapping was: Darling unmaps without darlingserver knowing, and the kernel reuses the
+	// address at once; sharing the new memory must share it, not what was there before
+	kr = make_entry(0, size, MAP_MEM_NAMED_CREATE | rw, &entry);
+	if (kr == KERN_SUCCESS && (kr = map_entry(entry, size, rw, &view)) == KERN_SUCCESS)
+	{
+		mach_vm_deallocate(mach_task_self(), view, size);
+		mach_port_deallocate(mach_task_self(), entry);
+		kr = make_entry(0, size, MAP_MEM_NAMED_CREATE | rw, &entry);
+		if (kr == KERN_SUCCESS)
+			kr = mach_vm_map(mach_task_self(), &view, size, 0, VM_FLAGS_FIXED, entry, 0, FALSE, rw, rw, VM_INHERIT_NONE);
+		if (kr == KERN_SUCCESS)
+			kr = map_entry(entry, size, rw, &other);
+		if (kr == KERN_SUCCESS && (kr = make_entry(view, size, MAP_MEM_VM_SHARE | rw, &again)) == KERN_SUCCESS &&
+			(kr = map_entry(again, size, rw, &copy)) == KERN_SUCCESS)
+		{
+			strcpy((char*) copy, "written to the new memory");
+			check(strcmp((char*) other, "written to the new memory") == 0, "memory mapped at a reused address is shared",
+				(char*) other);
+		}
+	}
+	if (kr != KERN_SUCCESS)
+		check(false, "memory mapped at a reused address is shared", mach_error_string(kr));
+
+	// a range whose end rounds up past the end of the address space (it used to pass the protection check as empty)
+	kr = make_entry((mach_vm_address_t) -vm_page_size, vm_page_size / 2, MAP_MEM_VM_SHARE | VM_PROT_READ, &entry);
+	check(kr != KERN_SUCCESS, "a range that wraps around can't be shared", "it was");
 
 	// an entry for at most the range's protection
 	buffer = allocate(size);

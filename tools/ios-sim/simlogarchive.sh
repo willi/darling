@@ -32,9 +32,17 @@ if [ -e "$OUT" ] && [ -n "$(ls -A "$OUT")" ]; then
 	exit 1
 fi
 
+created=false
+[ -e "$OUT" ] || created=true
 mkdir -p "$OUT"
-cp -R "$STORE/." "$OUT/"
-if [ -d "$STRINGS" ]; then
-	cp -R "$STRINGS/." "$OUT/"
+if ! cp -R "$STORE/." "$OUT/" || { [ -d "$STRINGS" ] && ! cp -R "$STRINGS/." "$OUT/"; }; then
+	# leave nothing half-copied behind (it would be refused as non-empty next time)
+	if $created; then
+		rm -rf "$OUT"
+	else
+		find "$OUT" -mindepth 1 -delete
+	fi
+	echo "couldn't copy the logs into $OUT" >&2
+	exit 1
 fi
 echo "$OUT"
