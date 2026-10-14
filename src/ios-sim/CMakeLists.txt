@@ -10,6 +10,7 @@ install(PROGRAMS
 	${CMAKE_SOURCE_DIR}/tools/ios-sim/simrun.sh
 	${CMAKE_SOURCE_DIR}/tools/ios-sim/simboot.sh
 	${CMAKE_SOURCE_DIR}/tools/ios-sim/simshutdown.sh
+	${CMAKE_SOURCE_DIR}/tools/ios-sim/simlogarchive.sh
 	DESTINATION libexec/darling/usr/libexec/ios-sim
 	COMPONENT ios_sim
 )

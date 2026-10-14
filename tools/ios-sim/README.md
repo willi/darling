@@ -10,6 +10,8 @@ Status, with the iOS 26.5 runtime:
 - a device boots: Apple's `launchd_sim` runs the runtime's daemons and the programs `simspawn` asks for. `defaults
   write` and `defaults read` go through the device's own `cfprefsd`, which `launchd_sim` starts on demand;
 - a device shuts down: `launchd_sim` stops its daemons and exits, and the device boots again with its data;
+- `os_log` works: the device's `logd` collects the messages of the programs in the device and stores them, and a
+  `.logarchive` reader reads them on Linux;
 - UIKit processes have not been tried yet.
 
 ## Usage
@@ -41,16 +43,27 @@ export SIM_RUNTIME_ROOT=...
 
 `simboot.sh` boots the device as CoreSimulator does: a job in Darling's `launchd` runs the runtime's
 `launchd_sim_trampoline`, which hands the device's bootstrap port to `launchd_sim`. The device loads the daemons in
-`SIM_DAEMONS` (only `cfprefsd` by default). `simspawn` passes `SIMCTL_CHILD_*` variables to the program, as
+`SIM_DAEMONS` (`cfprefsd`, `logd` and `logd_helper` by default). `simspawn` passes `SIMCTL_CHILD_*` variables to the program, as
 `simctl spawn` does; `SIMCTL_CHILD_OS_ACTIVITY_DT_MODE=1` prints its `os_log` messages on stderr.
 `launchd_sim` logs to `/private/var/tmp/com.apple.CoreSimulator.SimDevice.<udid>/launchd.log`.
 `simshutdown.sh` unloads the device's job, as `simctl shutdown` does: `launchd` sends `launchd_sim` SIGTERM, and
 `launchd_sim` stops the device's processes and exits. The device's variables (`SIM_UDID` and so on) are in
 `simdevice.sh`.
 
-Not working yet:
-- `logd`: `os_log`'s buffers need `mach_make_memory_entry()` memory entries, which darlingserver doesn't have (with
-  `logd` loaded, darlingserver aborts in that stub).
+The runtime has no `log` tool. `logd` writes its store when the device shuts down; `simlogarchive.sh` then collects
+it, with the format strings `logd` saved for each binary, into a directory laid out as a `.logarchive`, which
+[mandiant/macos-UnifiedLogs](https://github.com/mandiant/macos-UnifiedLogs)' `unifiedlog_iterator` reads on Linux:
+
+```sh
+/usr/libexec/ios-sim/simshutdown.sh
+/usr/libexec/ios-sim/simlogarchive.sh "/Volumes/SystemRoot$HOME/device.logarchive"
+# then, on Linux, from a macos-UnifiedLogs checkout:
+#   cargo run --release --manifest-path examples/unifiedlog_iterator/Cargo.toml -- \
+#     -m log-archive -i ~/device.logarchive -o device.jsonl
+```
+
+`launchd_sim`'s messages are simple dumps, which the reader shows with no process: it looks their sender up in the
+dyld shared cache, which the runtime doesn't use here.
 
 ## What makes it work
 
@@ -85,6 +98,13 @@ Not working yet:
   `launchd_sim` stops its daemons with; and a dead process's port rights dying with it, as XNU's do, so that `launchd`
   gets the device's Mach service back. `tests/src/kqueue_signal.c` checks the knotes (build the `kqueue_signal` target
   as `workq_kevent` above).
+- `os_log` needs: Mach memory entries (`mach_make_memory_entry_64()`), which each process makes for its firehose buffer
+  and sends to `logd`, which maps it with `mach_vm_map()`. Linux only shares memory that is a file, so darlingserver
+  moves the range into a memfd when it makes the entry and maps the memfd for `mach_vm_map()`;
+  `tests/src/memory_entry.c` checks them (build the `memory_entry` target as `workq_kevent` above). `logd` also needs
+  the `kern.bootsessionuuid` sysctl; `csops()` returning the program's entitlements from its code signature
+  (`logd_helper` serves only `logd`, which its entitlements show); and `proc_pidinfo()` reporting the program's
+  `LC_UUID`, which `logd` files the program's format strings under.
 - darlingserver provides the Mach voucher pieces libdispatch relies on: activity IDs, the voucher traps, and a BANK
   voucher attribute manager. The BANK manager is ported from XNU's `bank.c` without ledgers, thread groups or
   personas.
