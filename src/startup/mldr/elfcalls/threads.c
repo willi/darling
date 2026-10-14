@@ -328,6 +328,17 @@ int __darling_thread_terminate(void* stackaddr,
 				unsigned long freesize, unsigned long pthobj_size)
 {
 	int checkout_result = 0;
+	sigset_t all, app;
+
+	// Once it has checked out and closed its RPC socket, the thread can't run Darling's signal handlers (they talk to
+	// darlingserver first), so it takes no more signals: Linux hands a signal sent to the process to another thread.
+	// Until it has checked out, darlingserver may still send it its own two (to suspend it, or to make it run a call),
+	// and waits for an answer. Signals stay blocked when it longjmps out below: setjmp doesn't save the mask.
+	sigfillset(&all);
+	app = all;
+	sigdelset(&app, SIGRTMIN); // Darling's LINUX_SIGRTMIN is glibc's
+	sigdelset(&app, SIGRTMIN + 1);
+	pthread_sigmask(SIG_BLOCK, &app, NULL);
 
 	if (t_server_socket != -1) {
 		checkout_result = dserver_rpc_explicit_checkout(t_server_socket, -1, false);
@@ -352,16 +363,16 @@ int __darling_thread_terminate(void* stackaddr,
 		__mldr_close_rpc_socket(t_server_socket);
 	}
 
+	pthread_sigmask(SIG_BLOCK, &all, NULL);
+
 	if (getpid() == syscall(SYS_gettid))
 	{
 		// dispatch_main() calls pthread_exit(NULL) on the main thread,
 		// which turns our process into a zombie on Linux.
-		// Let's just hang around forever.
-		sigset_t mask;
-		memset(&mask, 0, sizeof(mask));
-
+		// Let's just hang around forever, with every signal still blocked: a process that dispatch_main() leaves
+		// takes its signals on libdispatch's threads (there's one while it has any source).
 		while (1)
-			sigsuspend(&mask);
+			sigsuspend(&all);
 	}
 
 	t_freeaddr = stackaddr;

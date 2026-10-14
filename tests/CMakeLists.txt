@@ -6,4 +6,7 @@ add_definitions(-nostdinc)
 add_darling_executable(workq_kevent src/workq_kevent.c)
 target_link_libraries(workq_kevent system)
 
-install(TARGETS workq_kevent DESTINATION libexec/darling/usr/libexec/darling-tests)
+add_darling_executable(kqueue_signal src/kqueue_signal.c)
+target_link_libraries(kqueue_signal system)
+
+install(TARGETS workq_kevent kqueue_signal DESTINATION libexec/darling/usr/libexec/darling-tests)

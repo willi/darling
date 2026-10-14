@@ -5,44 +5,34 @@
 #
 # usage: SIM_RUNTIME_ROOT=<RuntimeRoot> simboot.sh
 #
-# There is no shutdown yet: launchd_sim doesn't act on launchd's SIGTERM under Darling, and `launchctl unload` of the
-# device's job hangs. Stop Darling to shut the device down.
+# simshutdown.sh shuts the device down again.
 #
 # SIM_DAEMONS lists the runtime's LaunchDaemons the device loads (labels; default: cfprefsd). launchd_sim starts
-# each when a client first looks it up. The device's other variables are simrun.sh's.
+# each when a client first looks it up. The device's other variables are in simdevice.sh.
 set -eu
 : "${SIM_RUNTIME_ROOT:?set SIM_RUNTIME_ROOT to the RuntimeRoot of the runtime}"
-: "${SIM_RUNTIME_VERSION:=26.5}"
-: "${SIM_RUNTIME_BUILD_VERSION:=23F77}"
-: "${SIM_UDID:=4C0A1A5E-0000-4000-8000-000000000001}"
-: "${SIM_DEVICE_NAME:=Darling iPhone}"
-: "${SIM_MODEL_IDENTIFIER:=iPhone17,3}"
-: "${SIM_PRODUCT_CLASS:=D47}"
-: "${SIM_DEVICE_DATA:=$HOME/Library/Developer/CoreSimulator/Devices/$SIM_UDID/data}"
+# shellcheck source=simdevice.sh
+. "$(dirname "$0")/simdevice.sh"
 # logd isn't among them: os_log's buffers need memory entries darlingserver doesn't support yet
 : "${SIM_DAEMONS:=com.apple.cfprefsd.xpc.daemon}"
 : "${SIM_BOOT_TIMEOUT:=60}"
 
 R="$SIM_RUNTIME_ROOT"
 D="$SIM_DEVICE_DATA"
-# the device's name in Darling's bootstrap namespace, which simspawn and the runtime's libxpc look up
-NAME="com.apple.CoreSimulator.SimDevice.$SIM_UDID"
-JOB="$D/var/run/$NAME.plist"
-# launchd_sim's own log, in the temporary state directory it makes, and its line once the device has booted
-LOG="/private/var/tmp/$NAME/launchd.log"
-BOOTED='(system) <Notice>: exiting bootstrap mode'
+NAME="$SIM_DEVICE_JOB_LABEL"
+JOB="$SIM_DEVICE_JOB"
+LOG="$SIM_DEVICE_LOG"
 
 if [ $# -gt 0 ]; then
 	echo "usage: SIM_RUNTIME_ROOT=<RuntimeRoot> $0" >&2
 	exit 64
 fi
 if launchctl list "$NAME" >/dev/null 2>&1; then
-	if grep -qF "$BOOTED" "$LOG" 2>/dev/null; then
+	if grep -qF "$SIM_DEVICE_BOOTED" "$LOG" 2>/dev/null; then
 		echo "$NAME is already booted" >&2
 		exit 0
 	fi
-	# its job can't be unloaded yet (see above)
-	echo "$NAME is loaded but didn't finish booting; see $LOG. Stop Darling to try again." >&2
+	echo "$NAME is loaded but didn't finish booting; see $LOG. Run simshutdown.sh to try again." >&2
 	exit 1
 fi
 
@@ -116,10 +106,11 @@ rm -f "$LOG"
 launchctl load "$JOB"
 
 i=0
-until grep -qF "$BOOTED" "$LOG" 2>/dev/null; do
+until grep -qF "$SIM_DEVICE_BOOTED" "$LOG" 2>/dev/null; do
 	i=$((i + 1))
 	if [ "$i" -gt "$SIM_BOOT_TIMEOUT" ]; then
 		echo "$NAME didn't finish booting in ${SIM_BOOT_TIMEOUT}s; see $LOG and $D/Library/Logs/launchd_sim.log" >&2
+		echo "simshutdown.sh stops it" >&2
 		exit 1
 	fi
 	sleep 1

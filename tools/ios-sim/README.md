@@ -9,12 +9,13 @@ Status, with the iOS 26.5 runtime:
 - Foundation/XPC clients such as `usr/bin/defaults read` run to completion;
 - a device boots: Apple's `launchd_sim` runs the runtime's daemons and the programs `simspawn` asks for. `defaults
   write` and `defaults read` go through the device's own `cfprefsd`, which `launchd_sim` starts on demand;
+- a device shuts down: `launchd_sim` stops its daemons and exits, and the device boots again with its data;
 - UIKit processes have not been tried yet.
 
 ## Usage
 
 1. Build Darling with the `ios_sim` component (`-DCOMPONENTS=stock,ios_sim`, or `all`). It installs `simrun.sh`,
-   `simboot.sh` and `simspawn` in the prefix's `/usr/libexec/ios-sim`.
+   `simboot.sh`, `simshutdown.sh` and `simspawn` in the prefix's `/usr/libexec/ios-sim`.
 2. Extract a runtime (e.g. from Xcode's `iOS_<version>_Simulator_Runtime.dmg`). Do not modify its files: its code
    signatures should keep verifying.
 3. Inside `darling shell`:
@@ -35,6 +36,7 @@ export SIM_RUNTIME_ROOT=...
 /usr/libexec/ios-sim/simboot.sh
 /usr/libexec/ios-sim/simspawn usr/bin/defaults write com.example.test greeting hello
 /usr/libexec/ios-sim/simspawn usr/bin/defaults read com.example.test greeting
+/usr/libexec/ios-sim/simshutdown.sh
 ```
 
 `simboot.sh` boots the device as CoreSimulator does: a job in Darling's `launchd` runs the runtime's
@@ -42,11 +44,13 @@ export SIM_RUNTIME_ROOT=...
 `SIM_DAEMONS` (only `cfprefsd` by default). `simspawn` passes `SIMCTL_CHILD_*` variables to the program, as
 `simctl spawn` does; `SIMCTL_CHILD_OS_ACTIVITY_DT_MODE=1` prints its `os_log` messages on stderr.
 `launchd_sim` logs to `/private/var/tmp/com.apple.CoreSimulator.SimDevice.<udid>/launchd.log`.
+`simshutdown.sh` unloads the device's job, as `simctl shutdown` does: `launchd` sends `launchd_sim` SIGTERM, and
+`launchd_sim` stops the device's processes and exits. The device's variables (`SIM_UDID` and so on) are in
+`simdevice.sh`.
 
 Not working yet:
 - `logd`: `os_log`'s buffers need `mach_make_memory_entry()` memory entries, which darlingserver doesn't have (with
-  `logd` loaded, darlingserver aborts in that stub);
-- shutting a device down: `launchd_sim` doesn't act on `launchd`'s SIGTERM, and `launchctl unload` of its job hangs.
+  `logd` loaded, darlingserver aborts in that stub).
 
 ## What makes it work
 
@@ -74,6 +78,13 @@ Not working yet:
   logs through one); `mach_vm_map()` of anonymous memory; and `__mac_syscall` answering the Sandbox checks as for an
   unsandboxed process (`sandbox_check()` allows; `sandbox_passthrough_access()` checks the file's permissions).
   Without the last, CFPreferences avoids `cfprefsd`, and `cfprefsd` refuses to write.
+- Shutting a device down needs: EVFILT_SIGNAL knotes that see every signal delivered to the process, whichever thread
+  takes it and whatever its disposition, as XNU's do (libdispatch's signal sources, which `launchd_sim` stops on;
+  Darling's signal handlers post them; `signal_knotes.h` lists where they still differ from XNU's); a thread that has
+  exited, such as the main thread after `dispatch_main()`, taking no more signals; `proc_terminate()`, which
+  `launchd_sim` stops its daemons with; and a dead process's port rights dying with it, as XNU's do, so that `launchd`
+  gets the device's Mach service back. `tests/src/kqueue_signal.c` checks the knotes (build the `kqueue_signal` target
+  as `workq_kevent` above).
 - darlingserver provides the Mach voucher pieces libdispatch relies on: activity IDs, the voucher traps, and a BANK
   voucher attribute manager. The BANK manager is ported from XNU's `bank.c` without ledgers, thread groups or
   personas.
