@@ -268,7 +268,9 @@ int main(int argc, char** argv, char** envp)
 		exit(1);
 	}
 
-	if (dserver_rpc_set_executable_path(filename, strlen(filename)) < 0) {
+	uint64_t uuid[2];
+	memcpy(uuid, mldr_load_results.uuid, sizeof(uuid));
+	if (dserver_rpc_set_executable_path(filename, strlen(filename), uuid[0], uuid[1]) < 0) {
 		fprintf(stderr, "Failed to tell darlingserver about our executable path\n");
 		exit(1);
 	}
