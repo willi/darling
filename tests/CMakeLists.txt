@@ -36,7 +36,10 @@ target_link_libraries(o_symlink system)
 add_darling_executable(xattr src/xattr.c)
 target_link_libraries(xattr system)
 
+add_darling_executable(ofd_lock src/ofd_lock.c)
+target_link_libraries(ofd_lock system)
+
 add_darling_executable(memory_entry src/memory_entry.c)
 target_link_libraries(memory_entry system)
 
-install(TARGETS workq_kevent kqueue_signal kqueue_timer memory_entry timer_race getattrlistbulk getattrlist ulock_workloop thread_info mincore o_symlink xattr DESTINATION libexec/darling/usr/libexec/darling-tests)
+install(TARGETS workq_kevent kqueue_signal kqueue_timer memory_entry timer_race getattrlistbulk getattrlist ulock_workloop thread_info mincore o_symlink xattr ofd_lock DESTINATION libexec/darling/usr/libexec/darling-tests)
