@@ -32,4 +32,5 @@ while launchctl list "$SIM_DEVICE_JOB_LABEL" >/dev/null 2>&1; do
 	sleep 1
 done
 wait
+launchctl unload "$SIM_IOKIT_JOB" 2>/dev/null || true
 echo "shut down $SIM_DEVICE_JOB_LABEL"
