@@ -760,6 +760,20 @@ void __mldr_close_rpc_socket(int socket) {
 	socket_bitmap_put(&socket_bitmap, socket);
 };
 
+// The fork child refreshes its RPC sockets through the socket bitmap: a fork while another thread held its lock
+// would leave the child waiting for that lock forever.
+void __mldr_fork_prepare(void) {
+	pthread_mutex_lock(&socket_bitmap.mutex);
+};
+
+void __mldr_fork_parent(void) {
+	pthread_mutex_unlock(&socket_bitmap.mutex);
+};
+
+void __mldr_fork_child(void) {
+	pthread_mutex_unlock(&socket_bitmap.mutex);
+};
+
 int __mldr_create_process_lifetime_pipe(int* fds) {
 	// These pipes are not required for Linux 5.3 or newer,
 	// we already have pidfd_open.
