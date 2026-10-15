@@ -15,6 +15,7 @@
 #include <sys/mount.h>
 #include <sys/stat.h>
 #include <sys/vnode.h>
+#include <sys/xattr.h>
 #include <unistd.h>
 
 static int failures;
@@ -202,6 +203,71 @@ int main(void)
 		errno = 0;
 		check(setattrlist(file, &al, &v, sizeof(v), 0) == -1 && errno == EINVAL,
 			"setattrlist() refuses what can't be set");
+	}
+
+	// the access mask carries the object's type, as XNU's st_mode does; the volume root's has no type
+	{
+		struct attrlist al = { .bitmapcount = ATTR_BIT_MAP_COUNT, .commonattr = ATTR_CMN_ACCESSMASK };
+		struct __attribute__((packed))
+		{
+			uint32_t length;
+			uint32_t mode;
+		} f, d;
+		int rv = getattrlist(file, &al, &f, sizeof(f), 0) | getattrlist(dir, &al, &d, sizeof(d), 0);
+		check(rv == 0 && S_ISREG(f.mode) && S_ISDIR(d.mode) && (f.mode & 07777) == (st.st_mode & 07777),
+			"the access mask has the object's type and permissions");
+	}
+
+	// Finder info: what setattrlist() sets, getattrlist() and getxattr() give back, as on a Mac (one answer, the
+	// com.apple.FinderInfo attribute)
+	{
+		struct attrlist al = { .bitmapcount = ATTR_BIT_MAP_COUNT, .commonattr = ATTR_CMN_FNDRINFO };
+		char info[32] = "TEXTttxt", back[32] = { 0 }, xattr[32] = { 0 };
+		struct __attribute__((packed))
+		{
+			uint32_t length;
+			char info[32];
+		} r;
+		int rv = setattrlist(file, &al, info, sizeof(info), 0);
+		int got = getattrlist(file, &al, &r, sizeof(r), 0);
+		memcpy(back, r.info, sizeof(back));
+		ssize_t n = getxattr(file, XATTR_FINDERINFO_NAME, xattr, sizeof(xattr), 0, 0);
+		check(rv == 0 && got == 0 && memcmp(back, info, 32) == 0 && n == 32 && memcmp(xattr, info, 32) == 0,
+			"Finder info set with setattrlist() is what getattrlist() and getxattr() give");
+	}
+
+	// setattrlist() with a buffer shorter than the attributes: refused, not read past
+	{
+		struct attrlist al = { .bitmapcount = ATTR_BIT_MAP_COUNT, .commonattr = ATTR_CMN_MODTIME };
+		struct timespec t = { 1, 0 };
+		errno = 0;
+		check(setattrlist(file, &al, &t, sizeof(t) - 1, 0) == -1 && errno == EINVAL,
+			"setattrlist() refuses a buffer too short for the attributes");
+	}
+
+	// fstatfs() as XNU answers it: the file system of what's open, even once removed; EBADF for no descriptor; EINVAL
+	// for what isn't a file. Darling's looked the descriptor's path up, which a removed file no longer has, and a bad
+	// descriptor was ENOENT.
+	{
+		struct statfs a, b;
+		int p[2];
+		char gone[PATH_MAX];
+		snprintf(gone, sizeof(gone), "%s/gone", dir);
+		fd = open(gone, O_CREAT | O_RDWR, 0644);
+		// a file's: a directory on an overlay (Darling's prefix) is on the overlay's device, a file on its layer's
+		int rv = fstatfs(fd, &a);
+		unlink(gone);
+		check(rv == 0 && fstatfs(fd, &b) == 0 && b.f_fsid.val[0] == a.f_fsid.val[0] &&
+				strcmp(b.f_mntonname, a.f_mntonname) == 0,
+			"fstatfs() on a removed file gives the file system it was on");
+		close(fd);
+		errno = 0;
+		check(fstatfs(fd, &b) == -1 && errno == EBADF, "fstatfs() on a closed descriptor is EBADF");
+		pipe(p);
+		errno = 0;
+		check(fstatfs(p[0], &b) == -1 && errno == EINVAL, "fstatfs() on a pipe is EINVAL");
+		close(p[0]);
+		close(p[1]);
 	}
 
 	unlink(file);

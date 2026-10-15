@@ -27,6 +27,13 @@ int main(void)
 			count == THREAD_EXTENDED_INFO_COUNT && ext.pth_run_state == TH_STATE_RUNNING,
 		"THREAD_EXTENDED_INFO: the calling thread is running");
 
+	// one answer to how the thread is scheduled: basic and extended info agree with thread_policy_get()
+	thread_basic_info_data_t basic;
+	count = THREAD_BASIC_INFO_COUNT;
+	check(thread_info(self, THREAD_BASIC_INFO, (thread_info_t) &basic, &count) == KERN_SUCCESS &&
+			basic.policy == POLICY_TIMESHARE && ext.pth_policy == POLICY_TIMESHARE,
+		"THREAD_BASIC_INFO and THREAD_EXTENDED_INFO: a time-shared thread");
+
 	policy_timeshare_info_data_t ts;
 	count = POLICY_TIMESHARE_INFO_COUNT;
 	check(thread_info(self, THREAD_SCHED_TIMESHARE_INFO, (thread_info_t) &ts, &count) == KERN_SUCCESS &&
