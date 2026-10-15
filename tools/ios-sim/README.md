@@ -50,6 +50,30 @@ export SIM_RUNTIME_ROOT=...
 `launchd_sim` stops the device's processes and exits. The device's variables (`SIM_UDID` and so on) are in
 `simdevice.sh`.
 
+### Installing and opening an app
+
+A device shows a home screen once it boots with the daemons SpringBoard needs (about 15 minutes the first time, while
+LaunchServices registers the runtime's apps): `SIM_DAEMONS=all`, or at least `cfprefsd`, `logd`, `notifyd`,
+`runningboardd`, `lsd`, `containermanagerd`, `backboardd`, `SpringBoard`, `iokitsimd`, `installd`, `systemstatusd`,
+`tccd` and `accountsd`, with `SIM_FRAMEBUFFER_FRAMEWORK` set for a screen. Give it a device type too:
+`SIM_DEVICE_TYPE` is an Xcode `.simdevicetype` for the model (`iPhone 16.simdevicetype` for the default iPhone17,3;
+Xcode keeps them in `/Library/Developer/CoreSimulator/Profiles/DeviceTypes`). Its capabilities tell MobileGestalt the
+screen's shape, without which UIKit can't lay an app's window out.
+
+`siminstall.m` installs an app as `simctl install` does (installd, through MobileInstallation's `MIInstallerClient`;
+LaunchServices refuses to install on iOS) and opens it as `simctl launch` does (SpringBoard). Build it for the
+simulator against the runtime's frameworks (`-framework Foundation -framework MobileInstallation -framework
+SpringBoardServices`) and sign it with `siminstall.entitlements`, e.g. with
+[rcodesign](https://github.com/indygreg/apple-platform-rs) (`rcodesign sign --entitlements-xml-file
+siminstall.entitlements siminstall`): SpringBoard opens apps only for clients entitled to. installd moves what it
+installs into its staging directory, so install a copy:
+
+```sh
+cp -R Hello.app ~/Hello.app
+/usr/libexec/ios-sim/simspawn /path/to/siminstall ~/Hello.app com.example.hello
+/usr/libexec/ios-sim/simspawn /path/to/siminstall - com.example.hello   # open it again
+```
+
 The runtime has no `log` tool. `logd` writes its store when the device shuts down; `simlogarchive.sh` then collects
 it, with the format strings `logd` saved for each binary, into a directory laid out as a `.logarchive`, which
 [mandiant/macos-UnifiedLogs](https://github.com/mandiant/macos-UnifiedLogs)' `unifiedlog_iterator` reads on Linux:
@@ -105,6 +129,18 @@ dyld shared cache, which the runtime doesn't use here.
   the `kern.bootsessionuuid` sysctl; `csops()` returning the program's entitlements from its code signature
   (`logd_helper` serves only `logd`, which its entitlements show); and `proc_pidinfo()` reporting the program's
   `LC_UUID`, which `logd` files the program's format strings under.
+- LaunchServices, installd and SpringBoard need the file system to answer as XNU's does: `getattrlist()`,
+  `getattrlistbulk()` and `setattrlist()` with every attribute XNU knows (`tests/src/getattrlist.c`); `statfs()` naming
+  the mount point as the process sees it, with the file's device as the file system ID, so CFURL finds a bundle's
+  volume; `open()` with `O_SYMLINK` opening anything but a symlink normally (`tests/src/o_symlink.c`); extended
+  attributes with XNU's names, kept in Linux's `user.` namespace (`tests/src/xattr.c`); `mincore()` on any address
+  (`tests/src/mincore.c`; Apple's SQLite traps without it); and locks of an open file description, with a timeout
+  (`F_OFD_SETLK`, `F_OFD_SETLKWTIMEOUT`; `tests/src/ofd_lock.c`): Apple's SQLite otherwise falls back to dot-file
+  locks, which outlive a daemon that dies holding them.
+- `thread_info()` and `thread_policy_get()` answer every flavor as XNU does (`tests/src/thread_info.c`); darlingserver
+  used to abort on the ones it didn't know, taking every process down with it.
+- `kern.boottime` is Linux's boot time, the same in every call: libc's `CLOCK_MONOTONIC` is the time of day less it
+  (`tests/src/clock_monotonic.c`).
 - darlingserver provides the Mach voucher pieces libdispatch relies on: activity IDs, the voucher traps, and a BANK
   voucher attribute manager. The BANK manager is ported from XNU's `bank.c` without ledgers, thread groups or
   personas.
