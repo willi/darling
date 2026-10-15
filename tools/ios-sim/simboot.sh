@@ -135,15 +135,18 @@ cat >"$SIM_IOKIT_JOB" <<EOF
 </dict></plist>
 EOF
 
-rm -f "$LOG"
+IOKIT_LOG="$D/Library/Logs/simiokitd.log"
+rm -f "$LOG" "$IOKIT_LOG"
 launchctl load "$JOB"
 launchctl load "$SIM_IOKIT_JOB"
 
+# booted once launchd_sim has left bootstrap mode and simiokitd has registered the device's IOKit in it (a daemon that
+# asks IOKit before then gets no answer)
 i=0
-until grep -qF "$SIM_DEVICE_BOOTED" "$LOG" 2>/dev/null; do
+until grep -qF "$SIM_DEVICE_BOOTED" "$LOG" 2>/dev/null && grep -qF "simiokitd: registered" "$IOKIT_LOG" 2>/dev/null; do
 	i=$((i + 1))
 	if [ "$i" -gt "$SIM_BOOT_TIMEOUT" ]; then
-		echo "$NAME didn't finish booting in ${SIM_BOOT_TIMEOUT}s; see $LOG and $D/Library/Logs/launchd_sim.log" >&2
+		echo "$NAME didn't finish booting in ${SIM_BOOT_TIMEOUT}s; see $LOG, $D/Library/Logs/launchd_sim.log and $IOKIT_LOG" >&2
 		echo "simshutdown.sh stops it" >&2
 		exit 1
 	fi
