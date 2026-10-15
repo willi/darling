@@ -80,6 +80,9 @@ EOF
 	for v in $SIM_EXTRA_ENVIRONMENT; do
 		echo "<key>$(x "${v%%=*}")</key><string>$(x "${v#*=}")</string>"
 	done
+	if [ -n "$SIM_DEVICE_TYPE" ]; then
+		echo "<key>SIMULATOR_CAPABILITIES</key><string>$(x "$SIM_DEVICE_TYPE/Contents/Resources/capabilities.plist")</string>"
+	fi
 	if [ -n "$SIM_FRAMEBUFFER_FRAMEWORK" ]; then
 		echo "<key>SIMULATOR_FRAMEBUFFER_FRAMEWORK</key><string>$(x "$SIM_FRAMEBUFFER_FRAMEWORK")</string>"
 	fi

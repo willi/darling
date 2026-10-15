@@ -18,6 +18,10 @@
 # the SimFramebuffer framework the device's QuartzCore shows its screen with (CoreSimulator's, on a Mac); none: no
 # screen, and backboardd can't start
 : "${SIM_FRAMEBUFFER_FRAMEWORK:=}"
+# the device type (an Xcode .simdevicetype, e.g. iPhone 16's for iPhone17,3) as seen from inside Darling: MobileGestalt
+# reads its capabilities (the screen's shape, the artwork the device uses), and UIKit can't lay out a screen without
+# them. None: no capabilities.
+: "${SIM_DEVICE_TYPE:=}"
 # more of the device's environment, as NAME=VALUE words
 : "${SIM_EXTRA_ENVIRONMENT:=}"
 : "${SIM_DEVICE_DATA:=$HOME/Library/Developer/CoreSimulator/Devices/$SIM_UDID/data}"
