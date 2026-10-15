@@ -12,7 +12,9 @@ Status, with the iOS 26.5 runtime:
 - a device shuts down: `launchd_sim` stops its daemons and exits, and the device boots again with its data;
 - `os_log` works: the device's `logd` collects the messages of the programs in the device and stores them, and a
   `.logarchive` reader reads them on Linux;
-- UIKit processes have not been tried yet.
+- an app installs and runs: the device shows SpringBoard's home screen, `siminstall` installs an app through installd
+  and opens it through SpringBoard, and the app's UIKit draws its window. Images the app or SpringBoard draw from
+  asset catalogs (icons, an app's artwork) don't show yet.
 
 ## Usage
 
@@ -56,9 +58,16 @@ A device shows a home screen once it boots with the daemons SpringBoard needs (a
 LaunchServices registers the runtime's apps): `SIM_DAEMONS=all`, or at least `cfprefsd`, `logd`, `notifyd`,
 `runningboardd`, `lsd`, `containermanagerd`, `backboardd`, `SpringBoard`, `iokitsimd`, `installd`, `systemstatusd`,
 `tccd` and `accountsd`, with `SIM_FRAMEBUFFER_FRAMEWORK` set for a screen. Give it a device type too:
-`SIM_DEVICE_TYPE` is an Xcode `.simdevicetype` for the model (`iPhone 16.simdevicetype` for the default iPhone17,3;
-Xcode keeps them in `/Library/Developer/CoreSimulator/Profiles/DeviceTypes`). Its capabilities tell MobileGestalt the
-screen's shape, without which UIKit can't lay an app's window out.
+`SIM_DEVICE_TYPE` is an Xcode `.simdevicetype` (`iPhone 16.simdevicetype`; Xcode keeps them in
+`/Library/Developer/CoreSimulator/Profiles/DeviceTypes`). As CoreSimulator does, the device takes its model, its
+screen and the profile's environment from it, and its capabilities tell MobileGestalt the screen's shape, without
+which UIKit can't lay an app's window out. `SIM_MODEL_IDENTIFIER`, `SIM_SCREEN_*` and the rest override what the
+device type says; `SIM_EXTRA_ENVIRONMENT` adds `NAME=VALUE` words to the environment of the device's processes.
+
+`simboot.sh` also starts `simiokitd` beside the device: a Mac's simulator processes reach the host kernel's IOKit, and
+Darling has none, so `simiokitd` serves `com.apple.iokitsimd` in the device (the runtime's IOKit looks it up when
+`IOS_SIMULATOR_IOKITSIMD=1`) with the registry's root and `IOPMrootDomain`, which `backboardd` and SpringBoard open,
+and `kIOReturnUnsupported` for the rest. Its log is the device's `Library/Logs/simiokitd.log`.
 
 `siminstall.m` installs an app as `simctl install` does (installd, through MobileInstallation's `MIInstallerClient`;
 LaunchServices refuses to install on iOS) and opens it as `simctl launch` does (SpringBoard). Build it for the
@@ -139,6 +148,9 @@ dyld shared cache, which the runtime doesn't use here.
   locks, which outlive a daemon that dies holding them.
 - `thread_info()` and `thread_policy_get()` answer every flavor as XNU does (`tests/src/thread_info.c`); darlingserver
   used to abort on the ones it didn't know, taking every process down with it.
+- FrontBoard trusts a client by its code signature: `csops()` gives a program's CDHash and entitlements from its own
+  signature (`CS_OPS_CDHASH`, `CS_OPS_ENTITLEMENTS_BLOB`), so a tool that opens apps must be signed with the
+  entitlements SpringBoard asks for (`siminstall.entitlements`).
 - `kern.boottime` is Linux's boot time, the same in every call: libc's `CLOCK_MONOTONIC` is the time of day less it
   (`tests/src/clock_monotonic.c`).
 - darlingserver provides the Mach voucher pieces libdispatch relies on: activity IDs, the voucher traps, and a BANK
