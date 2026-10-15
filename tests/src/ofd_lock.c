@@ -14,7 +14,14 @@
 #ifndef F_OFD_SETLK
 #	define F_OFD_SETLK 90
 #	define F_OFD_GETLK 92
+#	define F_OFD_SETLKWTIMEOUT 93
 #endif
+
+struct flocktimeout_
+{
+	struct flock fl;
+	struct timespec timeout;
+};
 
 static int failures;
 
@@ -52,8 +59,14 @@ int main(void)
 	check(fcntl(b, F_OFD_SETLK, &other) == -1 && (errno == EAGAIN || errno == EACCES),
 		"which can't take it, even in the same process");
 
+	// waiting for it gives up after the timeout: SQLite waits for its locks this way
+	struct flocktimeout_ wait = { other, { 0, 100000000 } };
+	errno = 0;
+	int rv = fcntl(b, F_OFD_SETLKWTIMEOUT, &wait);
+	check(rv == -1 && errno == ETIMEDOUT, "F_OFD_SETLKWTIMEOUT gives up with ETIMEDOUT");
+
 	close(a);
-	check(fcntl(b, F_OFD_SETLK, &other) == 0, "closing the description releases its lock");
+	check(fcntl(b, F_OFD_SETLKWTIMEOUT, &wait) == 0, "and takes the lock once it's free");
 
 	close(b);
 	unlink(file);
