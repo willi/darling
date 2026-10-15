@@ -27,7 +27,10 @@ target_link_libraries(ulock_workloop system)
 add_darling_executable(thread_info src/thread_info.c)
 target_link_libraries(thread_info system)
 
+add_darling_executable(mincore src/mincore.c)
+target_link_libraries(mincore system)
+
 add_darling_executable(memory_entry src/memory_entry.c)
 target_link_libraries(memory_entry system)
 
-install(TARGETS workq_kevent kqueue_signal kqueue_timer memory_entry timer_race getattrlistbulk getattrlist ulock_workloop thread_info DESTINATION libexec/darling/usr/libexec/darling-tests)
+install(TARGETS workq_kevent kqueue_signal kqueue_timer memory_entry timer_race getattrlistbulk getattrlist ulock_workloop thread_info mincore DESTINATION libexec/darling/usr/libexec/darling-tests)
