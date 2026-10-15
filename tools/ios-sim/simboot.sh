@@ -63,6 +63,7 @@ env_dict() {
 <key>SIMULATOR_DEVICE_NAME</key><string>$(x "$SIM_DEVICE_NAME")</string>
 <key>SIMULATOR_MODEL_IDENTIFIER</key><string>$(x "$SIM_MODEL_IDENTIFIER")</string>
 <key>SIMULATOR_PRODUCT_CLASS</key><string>$(x "$SIM_PRODUCT_CLASS")</string>
+<key>SIMULATOR_ARCHS</key><string>$(x "$SIM_ARCHS")</string>
 <key>SIMULATOR_SHARED_RESOURCES_DIRECTORY</key><string>$(x "$D")</string>
 <key>SIMULATOR_LOG_ROOT</key><string>$(x "$D/Library/Logs")</string>
 <key>SIMULATOR_HOST_HOME</key><string>$(x "$HOME")</string>

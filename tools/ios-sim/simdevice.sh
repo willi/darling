@@ -8,6 +8,8 @@
 : "${SIM_DEVICE_NAME:=Darling iPhone}"
 : "${SIM_MODEL_IDENTIFIER:=iPhone17,3}"
 : "${SIM_PRODUCT_CLASS:=D47}"
+# the architectures the device runs apps for: without them, LaunchServices registers no app
+: "${SIM_ARCHS:=x86_64}"
 # the screen of an iPhone 16 (iPhone17,3), in pixels, its scale and its dot pitch (pixels per inch)
 : "${SIM_SCREEN_WIDTH:=1179}"
 : "${SIM_SCREEN_HEIGHT:=2556}"
@@ -16,6 +18,8 @@
 # the SimFramebuffer framework the device's QuartzCore shows its screen with (CoreSimulator's, on a Mac); none: no
 # screen, and backboardd can't start
 : "${SIM_FRAMEBUFFER_FRAMEWORK:=}"
+# more of the device's environment, as NAME=VALUE words
+: "${SIM_EXTRA_ENVIRONMENT:=}"
 : "${SIM_DEVICE_DATA:=$HOME/Library/Developer/CoreSimulator/Devices/$SIM_UDID/data}"
 
 # the booted device's name in Darling's bootstrap namespace, which simspawn and the runtime's libxpc look up, and the
