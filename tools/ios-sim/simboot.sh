@@ -7,14 +7,13 @@
 #
 # simshutdown.sh shuts the device down again.
 #
-# SIM_DAEMONS lists the runtime's LaunchDaemons the device loads (labels; default: cfprefsd). launchd_sim starts
-# each when a client first looks it up. The device's other variables are in simdevice.sh.
+# SIM_DAEMONS lists the runtime's LaunchDaemons the device loads (labels; default: cfprefsd, and logd with its
+# helper). launchd_sim starts each when a client first looks it up. The device's other variables are in simdevice.sh.
 set -eu
 : "${SIM_RUNTIME_ROOT:?set SIM_RUNTIME_ROOT to the RuntimeRoot of the runtime}"
 # shellcheck source=simdevice.sh
 . "$(dirname "$0")/simdevice.sh"
-# logd isn't among them: os_log's buffers need memory entries darlingserver doesn't support yet
-: "${SIM_DAEMONS:=com.apple.cfprefsd.xpc.daemon}"
+: "${SIM_DAEMONS:=com.apple.cfprefsd.xpc.daemon com.apple.logd com.apple.logd_helper}"
 : "${SIM_BOOT_TIMEOUT:=60}"
 
 R="$SIM_RUNTIME_ROOT"

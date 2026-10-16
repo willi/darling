@@ -9,4 +9,10 @@ target_link_libraries(workq_kevent system)
 add_darling_executable(kqueue_signal src/kqueue_signal.c)
 target_link_libraries(kqueue_signal system)
 
-install(TARGETS workq_kevent kqueue_signal DESTINATION libexec/darling/usr/libexec/darling-tests)
+add_darling_executable(kqueue_timer src/kqueue_timer.c)
+target_link_libraries(kqueue_timer system)
+
+add_darling_executable(memory_entry src/memory_entry.c)
+target_link_libraries(memory_entry system)
+
+install(TARGETS workq_kevent kqueue_signal kqueue_timer memory_entry DESTINATION libexec/darling/usr/libexec/darling-tests)
