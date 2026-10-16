@@ -51,7 +51,10 @@ target_link_libraries(mk_timer_leeway system)
 add_darling_executable(cond_timedwait src/cond_timedwait.c)
 target_link_libraries(cond_timedwait system)
 
+add_darling_executable(thread_suspend_exited src/thread_suspend_exited.c)
+target_link_libraries(thread_suspend_exited system)
+
 add_darling_executable(memory_entry src/memory_entry.c)
 target_link_libraries(memory_entry system)
 
-install(TARGETS workq_kevent kqueue_signal kqueue_timer memory_entry timer_race getattrlistbulk getattrlist ulock_workloop thread_info mincore o_symlink xattr ofd_lock clock_monotonic vm_protect mk_timer_leeway cond_timedwait DESTINATION libexec/darling/usr/libexec/darling-tests)
+install(TARGETS workq_kevent kqueue_signal kqueue_timer memory_entry timer_race getattrlistbulk getattrlist ulock_workloop thread_info mincore o_symlink xattr ofd_lock clock_monotonic vm_protect mk_timer_leeway cond_timedwait thread_suspend_exited DESTINATION libexec/darling/usr/libexec/darling-tests)
