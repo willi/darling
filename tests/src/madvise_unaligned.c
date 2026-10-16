@@ -1,7 +1,7 @@
 // madvise() of a range that doesn't start on a page succeeds, as on XNU (which advises the pages the range touches).
 // Linux refuses such an address with EINVAL; LaunchServices' prewarming (MADV_WILLNEED on a property list inside its
 // database) failed that way thousands of times per data migration. The widening stays within the pages the range
-// touches, and never applies to MADV_DONTNEED, which Linux carries out by discarding private pages.
+// touches. MADV_DONTNEED keeps the data, as on XNU.
 //
 // Prints one "ok"/"not ok" line per check; the exit status is the number of failed checks.
 
@@ -49,10 +49,12 @@ int main(void)
 	check(madvise(p + 100, (size_t) -50, MADV_WILLNEED) == -1 && errno == EINVAL,
 		"a range that wraps past the end of memory fails with EINVAL");
 
-	// XNU's MADV_DONTNEED is a hint that keeps the contents; an unaligned one must not become Linux's discard of the
-	// whole page (whatever it returns)
-	madvise(p + 100, 10, MADV_DONTNEED);
-	check(filled(p, 2 * page, 'x'), "an unaligned MADV_DONTNEED leaves both pages' contents");
+	// XNU's MADV_DONTNEED is a hint that keeps the contents (it deactivates the pages); Linux's discards private
+	// pages, and anonymous memory read back as zeroes
+	check(madvise(p + 100, 10, MADV_DONTNEED) == 0 && filled(p, 2 * page, 'x'),
+		"an unaligned MADV_DONTNEED succeeds and leaves the contents");
+	check(madvise(p, 2 * page, MADV_DONTNEED) == 0 && filled(p, 2 * page, 'x'),
+		"an aligned MADV_DONTNEED leaves the contents");
 
 	return failures;
 }

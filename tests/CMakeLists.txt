@@ -64,3 +64,4 @@ add_darling_executable(madvise_unaligned src/madvise_unaligned.c)
 target_link_libraries(madvise_unaligned system)
 
 install(TARGETS workq_kevent kqueue_signal kqueue_timer memory_entry timer_race getattrlistbulk getattrlist ulock_workloop thread_info mincore o_symlink xattr ofd_lock clock_monotonic vm_protect mk_timer_leeway cond_timedwait thread_suspend_exited route_socket madvise_unaligned DESTINATION libexec/darling/usr/libexec/darling-tests)
+install(PROGRAMS run-all.sh DESTINATION libexec/darling/usr/libexec/darling-tests)

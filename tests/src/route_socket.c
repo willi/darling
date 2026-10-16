@@ -39,6 +39,9 @@ static void skip(const char* what, const char* why)
 	printf("ok - %s # SKIP %s\n", what, why);
 }
 
+// XNU's private RTM_GET that only the sender sees (net/route.h, PRIVATE)
+#define RTM_GET_SILENT 0x11
+
 #define ROUNDUP32(a) ((a) > 0 ? (1 + (((a) - 1) | (sizeof(uint32_t) - 1))) : sizeof(uint32_t))
 
 struct reply {
@@ -84,6 +87,13 @@ static int read_reply(int s, int seq, struct reply* r)
 		if (r->hdr.rtm_seq == seq)
 			return 0;
 	}
+}
+
+// writes req as it is; returns the reply's rtm_errno, or -1 if it wasn't answered
+static int route_get_raw(int s, struct request* req, int seq, struct reply* r)
+{
+	write(s, req, req->hdr.rtm_msglen);
+	return read_reply(s, seq, r) < 0 ? -1 : r->hdr.rtm_errno;
 }
 
 // RTM_GET dst; returns the reply's rtm_errno (0: a route), or -1 if the request wasn't written whole and answered
@@ -149,6 +159,35 @@ static void check_agreement(const char* name, unsigned index)
 	check(listed, "getifaddrs() (NET_RT_IFLIST) lists the interface with the same index");
 }
 
+// getifaddrs() lists every interface if_nameindex() names, with the same index, and their flags
+static void check_interfaces(void)
+{
+	struct if_nameindex* names = if_nameindex();
+	struct ifaddrs *ifa, *i;
+	int all = names != NULL, loopback = 0, up = 1;
+
+	if (getifaddrs(&ifa) != 0) {
+		check(0, "getifaddrs()");
+		return;
+	}
+	for (struct if_nameindex* n = names; n && n->if_index; n++) {
+		int found = 0;
+		for (i = ifa; i; i = i->ifa_next) {
+			if (i->ifa_addr && i->ifa_addr->sa_family == AF_LINK && strcmp(i->ifa_name, n->if_name) == 0
+					&& ((struct sockaddr_dl*) i->ifa_addr)->sdl_index == n->if_index) {
+				found = 1;
+				loopback |= (i->ifa_flags & IFF_LOOPBACK) != 0;
+				up &= (i->ifa_flags & IFF_UP) != 0 || strcmp(n->if_name, "lo") != 0;
+			}
+		}
+		all &= found;
+	}
+	freeifaddrs(ifa);
+	if_freenameindex(names);
+	check(all, "getifaddrs() lists every interface if_nameindex() names, by the same index");
+	check(loopback && up, "the loopback interface is IFF_LOOPBACK and IFF_UP");
+}
+
 int main(void)
 {
 	struct reply r;
@@ -169,8 +208,20 @@ int main(void)
 	// a public address: the default route's interface
 	inet_pton(AF_INET, "1.1.1.1", &in4.sin_addr);
 	int err = route_get(s, (struct sockaddr*) &in4, seq++, &r);
+	int routed = err == 0;
 	check(err >= 0, "RTM_GET is answered");
-	if (err == ESRCH) {
+	if (routed) {
+		// the route XNU reports is the table entry that matched: the default route, not a host route to 1.1.1.1
+		struct sockaddr* mask = reply_addr(&r, RTA_NETMASK);
+		check(!(r.hdr.rtm_flags & RTF_HOST) && (r.hdr.rtm_flags & RTF_GATEWAY) && mask != NULL && mask->sa_len == 0,
+			"1.1.1.1's route is the default route: a gateway, and a zero-length mask");
+		unsigned short index = r.hdr.rtm_index;
+		struct sockaddr_in any = { .sin_len = sizeof(any), .sin_family = AF_INET };
+		struct reply d;
+		// regression: Linux answers 0.0.0.0 with the loopback, so nw_path's interface was lo
+		check(route_get(s, (struct sockaddr*) &any, seq++, &d) == 0 && d.hdr.rtm_index == index
+				&& !(d.hdr.rtm_flags & RTF_LOCAL), "0.0.0.0 matches the default route, as in XNU");
+	} else if (err == ESRCH) {
 		skip("the default route's interface", "no default route");
 		// the loopback's agreement instead
 		in4.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
@@ -186,17 +237,30 @@ int main(void)
 		memcpy(name, sdl->sdl_data, sdl->sdl_nlen);
 	printf("# routes through %s (index %u)\n", name, r.hdr.rtm_index);
 	check_agreement(name, r.hdr.rtm_index);
+	check_interfaces();
 
 	// the loopback addresses go through the loopback interface
 	in4.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
 	sdl = route_get(s, (struct sockaddr*) &in4, seq++, &r) == 0 ? (struct sockaddr_dl*) reply_addr(&r, RTA_IFP) : NULL;
 	check(sdl != NULL && sdl->sdl_type == 0x18 /* IFT_LOOP */, "127.0.0.1 routes through the loopback");
+	check(r.hdr.rtm_flags & RTF_LOCAL, "and its route is RTF_LOCAL");
 	err = route_get(s, (struct sockaddr*) &in6, seq++, &r);
 	if (err == ESRCH) {
 		skip("::1 routes through the loopback", "no IPv6 in this network namespace");
 	} else {
 		sdl = err == 0 ? (struct sockaddr_dl*) reply_addr(&r, RTA_IFP) : NULL;
 		check(sdl != NULL && sdl->sdl_type == 0x18, "::1 routes through the loopback");
+		struct ifaddrs *ifa, *i;
+		int listed = 0;
+		if (getifaddrs(&ifa) == 0) {
+			for (i = ifa; i; i = i->ifa_next) {
+				listed |= i->ifa_addr && i->ifa_addr->sa_family == AF_INET6 && (i->ifa_flags & IFF_LOOPBACK)
+					&& IN6_IS_ADDR_LOOPBACK(&((struct sockaddr_in6*) i->ifa_addr)->sin6_addr);
+			}
+			freeifaddrs(ifa);
+		}
+		// NET_RT_IFLIST listed IPv4 addresses only
+		check(listed, "getifaddrs() lists ::1 on the loopback interface");
 	}
 
 	// only RTM_GET: the routes are Linux's. The refused request comes back with rtm_errno set.
@@ -209,9 +273,14 @@ int main(void)
 	check(read_reply(s, seq++, &r) == 0 && r.hdr.rtm_type == RTM_ADD && r.hdr.rtm_errno == EPERM,
 		"and its echo carries rtm_errno EPERM");
 
-	// a request whose rtm_msglen isn't its length is dropped
+	// a request whose rtm_msglen isn't its length fails, and comes back as it was sent
 	make_get(&req, (struct sockaddr*) &in4, seq);
-	check(write(s, &req, req.hdr.rtm_msglen - 4) == -1 && errno == EINVAL, "a truncated request fails with EINVAL");
+	check(write(s, &req, req.hdr.rtm_msglen - 4) == -1 && errno == EINVAL && read_reply(s, seq++, &r) == 0
+			&& r.hdr.rtm_errno == 0 && r.hdr.rtm_type == RTM_GET, "a truncated request fails with EINVAL, echoed as is");
+	// the addresses end with the message: the IFP that RTA_IFP announces may be left out, as XNU's rt_xaddrs() allows
+	make_get(&req, (struct sockaddr*) &in4, seq);
+	req.hdr.rtm_msglen = sizeof(req.hdr) + sizeof(in4);
+	check(route_get_raw(s, &req, seq++, &r) == 0, "a request that leaves out its last address is answered");
 	// an address that runs past the end of the message
 	make_get(&req, (struct sockaddr*) &in4, seq);
 	req.hdr.rtm_addrs = RTA_DST;
@@ -236,6 +305,40 @@ int main(void)
 	check(writev(s, bad, 2) == -1 && errno == EFAULT, "an iovec at a bad address fails with EFAULT");
 	check(write(s, (void*) 16, sizeof(req)) == -1 && errno == EFAULT, "a request at a bad address fails with EFAULT");
 
+	// a routing socket as a socket: its type, options and names are XNU's
+	int value = 0;
+	socklen_t value_len = sizeof(value);
+	check(getsockopt(s, SOL_SOCKET, SO_TYPE, &value, &value_len) == 0 && value == SOCK_RAW, "SO_TYPE is SOCK_RAW");
+	value_len = sizeof(value);
+	check(getsockopt(s, SOL_SOCKET, SO_USELOOPBACK, &value, &value_len) == 0 && value != 0,
+		"SO_USELOOPBACK is on");
+	value = 0;
+	check(setsockopt(s, SOL_SOCKET, SO_USELOOPBACK, &value, sizeof(value)) == 0, "SO_USELOOPBACK can be turned off");
+	make_get(&req, (struct sockaddr*) &in4, seq);
+	check(write(s, &req, req.hdr.rtm_msglen) == req.hdr.rtm_msglen && read_reply(s, seq++, &r) < 0,
+		"and then the sender's own request isn't answered to it");
+	make_get(&req, (struct sockaddr*) &in4, seq++);
+	req.hdr.rtm_type = RTM_GET_SILENT;
+	check(write(s, &req, req.hdr.rtm_msglen) == -1 && errno == EINVAL, "nor is RTM_GET_SILENT allowed");
+	value = 1;
+	setsockopt(s, SOL_SOCKET, SO_USELOOPBACK, &value, sizeof(value));
+	make_get(&req, (struct sockaddr*) &in4, seq);
+	req.hdr.rtm_type = RTM_GET_SILENT;
+	check(route_get_raw(s, &req, seq++, &r) == 0 && r.hdr.rtm_type == RTM_GET, "RTM_GET_SILENT is answered as RTM_GET");
+	check(setsockopt(s, PF_ROUTE, 1 /* FreeBSD's ROUTE_MSGFILTER */, &value, sizeof(value)) == -1
+			&& errno == ENOPROTOOPT, "an option of the routing level fails with ENOPROTOOPT");
+	struct sockaddr_storage ss;
+	socklen_t ss_len = sizeof(ss);
+	check(getsockname(s, (struct sockaddr*) &ss, &ss_len) == -1 && errno == EINVAL, "getsockname() fails with EINVAL");
+	ss_len = sizeof(ss);
+	check(getpeername(s, (struct sockaddr*) &ss, &ss_len) == 0 && ss.ss_family == PF_ROUTE,
+		"getpeername() gives the routing domain");
+	make_get(&req, (struct sockaddr*) &in4, seq);
+	check(sendto(s, &req, req.hdr.rtm_msglen, 0, (struct sockaddr*) &in4, sizeof(in4)) == -1 && errno == EISCONN,
+		"sendto() with an address fails with EISCONN");
+	check(socket(PF_ROUTE, SOCK_DGRAM, 0) == -1 && errno == EPROTONOSUPPORT,
+		"socket(PF_ROUTE, SOCK_DGRAM) fails with EPROTONOSUPPORT");
+
 	// regression: the answering end is the process's. A program that closes every descriptor it didn't open (as
 	// daemons do) must not take it, or every later request goes unanswered.
 	for (int fd = 3; fd < 256; fd++) {
@@ -251,6 +354,13 @@ int main(void)
 	int status = -1;
 	check(child > 0 && waitpid(child, &status, 0) == child && WIFEXITED(status) && WEXITSTATUS(status) == 0,
 		"a forked child's RTM_GET is answered");
+
+	// a copy of a routing socket is the same socket: it's answered too, also once the original is closed
+	int copy = dup(s);
+	check(copy >= 0 && answers(copy, seq++), "a dup() of a routing socket is answered");
+	close(s);
+	check(answers(copy, seq++), "and still is once the original is closed");
+	s = copy;
 
 	// a routing socket's number, replaced by dup2() or reused after close(), is an ordinary descriptor again
 	int sv[2];
