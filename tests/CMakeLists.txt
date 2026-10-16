@@ -45,7 +45,10 @@ target_link_libraries(clock_monotonic system)
 add_darling_executable(vm_protect src/vm_protect.c)
 target_link_libraries(vm_protect system)
 
+add_darling_executable(mk_timer_leeway src/mk_timer_leeway.c)
+target_link_libraries(mk_timer_leeway system)
+
 add_darling_executable(memory_entry src/memory_entry.c)
 target_link_libraries(memory_entry system)
 
-install(TARGETS workq_kevent kqueue_signal kqueue_timer memory_entry timer_race getattrlistbulk getattrlist ulock_workloop thread_info mincore o_symlink xattr ofd_lock clock_monotonic vm_protect DESTINATION libexec/darling/usr/libexec/darling-tests)
+install(TARGETS workq_kevent kqueue_signal kqueue_timer memory_entry timer_race getattrlistbulk getattrlist ulock_workloop thread_info mincore o_symlink xattr ofd_lock clock_monotonic vm_protect mk_timer_leeway DESTINATION libexec/darling/usr/libexec/darling-tests)
