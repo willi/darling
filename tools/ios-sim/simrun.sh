@@ -1,7 +1,9 @@
 #!/bin/sh
 # Run a binary from an unmodified iOS Simulator runtime under Darling (inside `darling shell`).
 #
-# usage: SIM_RUNTIME_ROOT=<RuntimeRoot> simrun.sh <binary path relative to RuntimeRoot> [args...]
+# usage: SIM_RUNTIME_ROOT=<RuntimeRoot> simrun.sh <binary> [args...]
+#
+# The binary is a path relative to RuntimeRoot, or an absolute path (a program built for the simulator).
 #
 # SIM_RUNTIME_ROOT is the runtime's Contents/Resources/RuntimeRoot as seen from inside Darling, e.g.
 # "/Volumes/SystemRoot/<linux path>/iOS 26.5.simruntime/Contents/Resources/RuntimeRoot".
@@ -17,6 +19,10 @@ set -e
 }
 B="$1"
 shift
+case "$B" in
+/*) ;;
+*) B="$SIM_RUNTIME_ROOT/$B" ;;
+esac
 mkdir -p "$SIM_DEVICE_DATA/tmp" "$SIM_DEVICE_DATA/Library/Logs"
 
 exec env DYLD_ROOT_PATH="$SIM_RUNTIME_ROOT" \
@@ -27,4 +33,4 @@ exec env DYLD_ROOT_PATH="$SIM_RUNTIME_ROOT" \
 	SIMULATOR_SHARED_RESOURCES_DIRECTORY="$SIM_DEVICE_DATA" SIMULATOR_LOG_ROOT="$SIM_DEVICE_DATA/Library/Logs" \
 	SIMULATOR_HOST_HOME="$HOME" HOME="$SIM_DEVICE_DATA" CFFIXED_USER_HOME="$SIM_DEVICE_DATA" \
 	TMPDIR="$SIM_DEVICE_DATA/tmp/" \
-	"$SIM_RUNTIME_ROOT/$B" "$@"
+	"$B" "$@"
