@@ -157,11 +157,12 @@ int main(void)
 
 		snprintf(path, sizeof(path), SYSTEM_ROOT "%s", mounts[i].on);
 		// a mount this process can't reach (under another one, or permissions) has nothing to compare, nor has one
-		// another is over (mount --move breaks mountinfo's order)
+		// another is over (mount --move breaks mountinfo's order). "/" is the root's names, which statfs() gives a
+		// mount it can't name: before Linux 5.8, every one
 		size_t len = strlen(path);
 		if (len > 1 && path[len - 1] == '/')
 			path[len - 1] = '\0';
-		if (statfs(path, &st) != 0 || strcmp(st.f_mntonname, path) != 0)
+		if (statfs(path, &st) != 0 || (strcmp(st.f_mntonname, path) != 0 && strcmp(st.f_mntonname, "/") != 0))
 			continue;
 		check_flags(&mounts[i], st.f_flags);
 		checked++;
