@@ -19,7 +19,7 @@ Status, with the iOS 26.5 runtime:
 ## Usage
 
 1. Build Darling with the `ios_sim` component (`-DCOMPONENTS=stock,ios_sim`, or `all`). It installs `simrun.sh`,
-   `simboot.sh`, `simshutdown.sh` and `simspawn` in the prefix's `/usr/libexec/ios-sim`.
+   `simboot.sh`, `simshutdown.sh`, `simspawn` and `simasuid` in the prefix's `/usr/libexec/ios-sim`.
 2. Extract a runtime (e.g. from Xcode's `iOS_<version>_Simulator_Runtime.dmg`). Do not modify its files: its code
    signatures should keep verifying.
 3. Inside `darling shell`:
@@ -50,6 +50,13 @@ export SIM_RUNTIME_ROOT=...
 `simboot.sh` needs umask 022 (or one that also keeps group and others from writing): `launchctl` skips job plists that
 group or others can write. A `darling shell` has `launchd`'s umask, which `darling` starts with at least 022.
 `launchd_sim` logs to `/private/var/tmp/com.apple.CoreSimulator.SimDevice.<udid>/launchd.log`.
+The device runs as `SIM_UID` (501 by default): CoreSimulator submits the job to the domain of the user who boots the
+device, so `launchd_sim` and everything it starts run as that user, never as root. Darling's `launchd` runs its jobs
+as root, so `simboot.sh` starts the trampoline through `simasuid`, which sets the uid and gid and execs it. Some
+daemons behave differently as root: libAccessibility, for one, asks backboardd over IPC for its preferences when
+`geteuid()` is 0, and backboardd then waits on itself. `SIM_UID=0` keeps the old behaviour, for debugging. Darling
+keeps the uid in darlingserver, and two things don't follow it yet: `stat()` reports every file as owned by the caller,
+and `proc_pidinfo()`/sysctl report the caller's uid for every process.
 `simshutdown.sh` unloads the device's job, as `simctl shutdown` does: `launchd` sends `launchd_sim` SIGTERM, and
 `launchd_sim` stops the device's processes and exits. The device's variables (`SIM_UDID` and so on) are in
 `simdevice.sh`.

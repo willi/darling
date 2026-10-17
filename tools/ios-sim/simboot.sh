@@ -10,7 +10,8 @@
 # SIM_DAEMONS lists the runtime's LaunchDaemons the device loads (labels; default: cfprefsd, and logd with its
 # helper; "all": every one, as CoreSimulator loads them). launchd_sim starts each when a client first looks it up, or at
 # load if it says so. SIM_EXTRA_ENVIRONMENT adds NAME=VALUE pairs (space-separated) to the environment of the device's
-# launchd_sim and its jobs. The device's other variables are in simdevice.sh.
+# launchd_sim and its jobs. SIM_UID is the user the device runs as: launchd_sim, and every process it starts. The
+# device's other variables are in simdevice.sh.
 set -eu
 : "${SIM_RUNTIME_ROOT:?set SIM_RUNTIME_ROOT to the RuntimeRoot of the runtime}"
 # shellcheck source=simdevice.sh
@@ -113,14 +114,20 @@ cat >"$D/var/run/launchd_bootstrap.plist" <<EOF
 </dict></plist>
 EOF
 
-# the job CoreSimulator submits: the trampoline checks the device's name in and becomes launchd_sim
+# the job CoreSimulator submits (to the domain of the user who boots the device, so launchd_sim runs as that user):
+# the trampoline checks the device's name in and becomes launchd_sim. Darling's launchd runs its jobs as root, so a
+# device with another SIM_UID starts through simasuid.
+as_user=
+if [ "$SIM_UID" != 0 ]; then
+	as_user="<string>/usr/libexec/ios-sim/simasuid</string><string>$(x "$SIM_UID")</string>"
+fi
 cat >"$JOB" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
 <key>Label</key><string>$(x "$NAME")</string>
 <key>MachServices</key><dict><key>$(x "$NAME")</key><dict><key>ResetAtClose</key><true/></dict></dict>
-<key>ProgramArguments</key><array>
+<key>ProgramArguments</key><array>$as_user
 <string>$(x "$R/sbin/launchd_sim_trampoline")</string>
 <string>$(x "$R/sbin/launchd_sim")</string>
 <string>$(x "$D/var/run/launchd_bootstrap.plist")</string>
