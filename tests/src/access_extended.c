@@ -390,6 +390,16 @@ static void as_nobody(const char* dir, const char* file, const char* open_dir, c
 		skip("a sticky directory's owner deletes someone else's file", "the directory couldn't be given to uid 65534");
 }
 
+// real uid 65534, effective uid 0: faccessat(AT_EACCESS) asks as the effective ids, accessx_np and faccessat as the
+// real ones
+static void real_nobody_effective_root(const char* file)
+{
+	check(faccessat(AT_FDCWD, file, W_OK, AT_EACCESS) == 0, "faccessat(AT_EACCESS): effective root may write a 0644 file");
+	errno = 0;
+	check_fails(faccessat(AT_FDCWD, file, W_OK, 0), EACCES, "faccessat: real uid 65534 may not");
+	check_errno(ask(file, W_OK), EACCES, "accessx_np checks as the real uid 65534");
+}
+
 // clonefile's answers before VNOP_CLONEFILE
 static void clones(const char* dir, const char* file)
 {
@@ -503,6 +513,10 @@ static void restricted_lookups(const char* dir)
 	check_fails(clonefile(link_to_file, dst, CLONE_NOFOLLOW_ANY | CLONE_NOFOLLOW), ENOTSUP,
 		"CLONE_NOFOLLOW_ANY with CLONE_NOFOLLOW: the link itself is ENOTSUP");
 	check_fails(clonefile(subfile, new_through, CLONE_NOFOLLOW_ANY), ELOOP, "CLONE_NOFOLLOW_ANY: a link on the target's path is ELOOP");
+	char sublink_slash[PATH_MAX];
+	snprintf(sublink_slash, sizeof(sublink_slash), "%s/", sublink);
+	check_fails(clonefile(sublink_slash, dst, CLONE_NOFOLLOW_ANY | CLONE_NOFOLLOW), ELOOP,
+		"CLONE_NOFOLLOW_ANY: a link before a trailing slash is followed: ELOOP");
 
 	int dfd = open(dir, O_RDONLY);
 	check_fails(clonefileat(dfd, "sub/f", dfd, "clone", CLONE_RESOLVE_BENEATH), ENOTSUP, "CLONE_RESOLVE_BENEATH: inside is ENOTSUP");
@@ -520,6 +534,24 @@ static void restricted_lookups(const char* dir)
 		"CLONE_RESOLVE_BENEATH: a link up and out is ENOTCAPABLE");
 	check_fails(clonefileat(dfd, "sub/f", dfd, "../clone", CLONE_RESOLVE_BENEATH), ENOTCAPABLE,
 		"CLONE_RESOLVE_BENEATH: a target outside is ENOTCAPABLE");
+	check_fails(clonefileat(dfd, "sub/../../x", dfd, "clone", CLONE_RESOLVE_BENEATH), ENOTCAPABLE,
+		"CLONE_RESOLVE_BENEATH: a .. back out after going in is ENOTCAPABLE");
+	// the directory is checked before the path's components
+	check_fails(clonefileat(987, "../x", dfd, "clone", CLONE_RESOLVE_BENEATH), EBADF,
+		"CLONE_RESOLVE_BENEATH from a closed descriptor is EBADF");
+	int ffd = open(subfile, O_RDONLY);
+	check_fails(clonefileat(ffd, "../x", dfd, "clone", CLONE_RESOLVE_BENEATH), ENOTDIR,
+		"CLONE_RESOLVE_BENEATH from a file's descriptor is ENOTDIR");
+	close(ffd);
+	// a link's text and the rest of the path within MAXPATHLEN
+	char long_link[PATH_MAX], long_target[1001];
+	memset(long_target, 'b', sizeof(long_target) - 1);
+	long_target[sizeof(long_target) - 1] = '\0';
+	snprintf(long_link, sizeof(long_link), "%s/longlink", dir);
+	symlink(long_target, long_link);
+	check_fails(clonefileat(dfd, "longlink/cccccccccccccccccccccccccccccccccccccccc", dfd, "clone", CLONE_RESOLVE_BENEATH),
+		ENAMETOOLONG, "CLONE_RESOLVE_BENEATH: a link's text and the rest over MAXPATHLEN is ENAMETOOLONG");
+	unlink(long_link);
 	close(dfd);
 
 	unlink(sublink);
@@ -584,27 +616,35 @@ int main(void)
 
 		// someone else's files: the same questions as a non-root Linux uid, in a child
 		int given = set_linux_owner(their_sticky, NOBODY) == 0;
-		int pipefd[2];
-		pipe(pipefd);
-		pid_t pid = fork();
-		if (pid == 0)
+		for (int which = 0; which < 2; which++)
 		{
+			int pipefd[2];
+			pipe(pipefd);
+			pid_t pid = fork();
+			if (pid == 0)
+			{
+				close(pipefd[0]);
+				failures = 0; // the parent's count is the parent's
+				// 0: every id 65534; 1: the real uid 65534 and the effective one still 0
+				int euid = which == 0 ? NOBODY : 0;
+				if (__linux_syscall(LINUX_NR_setgroups, 0, 0) < 0 || __linux_syscall(LINUX_NR_setresgid, NOBODY, NOBODY, NOBODY) < 0 ||
+					__linux_syscall(LINUX_NR_setresuid, NOBODY, euid, euid) < 0)
+					check(0, "switching to Linux uid 65534");
+				else if (which == 0)
+					as_nobody(dir, file, open_dir, in_open, in_sticky, mine_in_sticky, given ? in_their_sticky : NULL);
+				else
+					real_nobody_effective_root(file);
+				write(pipefd[1], &failures, sizeof(failures));
+				_exit(0);
+			}
+			close(pipefd[1]);
+			int child_failures = 0;
+			if (read(pipefd[0], &child_failures, sizeof(child_failures)) != sizeof(child_failures))
+				check(0, "the non-root child reported back");
+			failures += child_failures;
 			close(pipefd[0]);
-			failures = 0; // the parent's count is the parent's
-			if (__linux_syscall(LINUX_NR_setgroups, 0, 0) < 0 || __linux_syscall(LINUX_NR_setresgid, NOBODY, NOBODY, NOBODY) < 0 ||
-				__linux_syscall(LINUX_NR_setresuid, NOBODY, NOBODY, NOBODY) < 0)
-				check(0, "switching to Linux uid 65534");
-			else
-				as_nobody(dir, file, open_dir, in_open, in_sticky, mine_in_sticky, given ? in_their_sticky : NULL);
-			write(pipefd[1], &failures, sizeof(failures));
-			_exit(0);
+			waitpid(pid, NULL, 0);
 		}
-		close(pipefd[1]);
-		int child_failures = 0;
-		if (read(pipefd[0], &child_failures, sizeof(child_failures)) != sizeof(child_failures))
-			check(0, "the non-root child reported back");
-		failures += child_failures;
-		waitpid(pid, NULL, 0);
 	}
 
 	unlink(in_open);
