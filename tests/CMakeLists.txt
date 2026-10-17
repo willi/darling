@@ -72,5 +72,8 @@ target_link_libraries(socket_recv system)
 add_darling_executable(socket_send src/socket_send.c)
 target_link_libraries(socket_send system)
 
-install(TARGETS workq_kevent kqueue_signal kqueue_timer memory_entry timer_race getattrlistbulk getattrlist ulock_workloop thread_info mincore o_symlink xattr ofd_lock clock_monotonic vm_protect mk_timer_leeway cond_timedwait thread_suspend_exited route_socket madvise_unaligned kqueue_sock socket_recv socket_send DESTINATION libexec/darling/usr/libexec/darling-tests)
+add_darling_executable(statfs_flags src/statfs_flags.c)
+target_link_libraries(statfs_flags system)
+
+install(TARGETS workq_kevent kqueue_signal kqueue_timer memory_entry timer_race getattrlistbulk getattrlist ulock_workloop thread_info mincore o_symlink xattr ofd_lock clock_monotonic vm_protect mk_timer_leeway cond_timedwait thread_suspend_exited route_socket madvise_unaligned kqueue_sock socket_recv socket_send statfs_flags DESTINATION libexec/darling/usr/libexec/darling-tests)
 install(PROGRAMS run-all.sh DESTINATION libexec/darling/usr/libexec/darling-tests)
