@@ -81,5 +81,8 @@ target_link_libraries(access_extended system)
 add_darling_executable(proc_name src/proc_name.c)
 target_link_libraries(proc_name system)
 
-install(TARGETS workq_kevent kqueue_signal kqueue_timer memory_entry timer_race getattrlistbulk getattrlist ulock_workloop thread_info mincore o_symlink xattr ofd_lock clock_monotonic vm_protect mk_timer_leeway cond_timedwait thread_suspend_exited route_socket madvise_unaligned kqueue_sock socket_recv socket_send statfs_flags access_extended proc_name DESTINATION libexec/darling/usr/libexec/darling-tests)
+add_darling_executable(gethostuuid src/gethostuuid.c)
+target_link_libraries(gethostuuid system)
+
+install(TARGETS workq_kevent kqueue_signal kqueue_timer memory_entry timer_race getattrlistbulk getattrlist ulock_workloop thread_info mincore o_symlink xattr ofd_lock clock_monotonic vm_protect mk_timer_leeway cond_timedwait thread_suspend_exited route_socket madvise_unaligned kqueue_sock socket_recv socket_send statfs_flags access_extended proc_name gethostuuid DESTINATION libexec/darling/usr/libexec/darling-tests)
 install(PROGRAMS run-all.sh DESTINATION libexec/darling/usr/libexec/darling-tests)
