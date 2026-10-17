@@ -73,6 +73,11 @@ int main(int argc, char ** argv)
 	setuid(0);
 	setgid(0);
 
+	// a Mac's kernel starts launchd with umask 022; the prefix's files and its launchd (through darlingserver) would
+	// otherwise get whatever started the prefix (a docker exec can give 0), and launchctl skips job plists group or
+	// others can write. A stricter umask stays: shells in the prefix get launchd's, not this one's
+	umask(umask(0) | 022);
+
 	prefix = getenv("DPREFIX");
 	if (!prefix)
 		prefix = defaultPrefixPath();
