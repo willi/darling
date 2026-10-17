@@ -101,6 +101,43 @@ static const char* const skip_env_vars[] = {
 	"__mldr_lifetime_pipe",
 };
 
+// posix_spawn()'s pipe (__mldr_spawn_pipe): XNU's posix_spawn() returns once the new image is activated, so the parent
+// waits for this to close, or for the error that failed the activation (a negative errno, as sys_posix_spawn() returns
+// it). -1 when there's none, or once it's closed.
+static int spawn_pipe = -1;
+
+// the error, as XNU's load_return_to_errno() (xnu-12377.121.6 bsd/kern/kern_exec.c) maps it, of an activation that fails
+// here; LOAD_FAILURE's by default. XNU's numbers: Linux has no EBADARCH and the others.
+#define XNU_EBADEXEC 85
+#define XNU_EBADARCH 86
+#define XNU_EBADMACHO 88
+static int spawn_error = XNU_EBADEXEC;
+
+static void spawn_pipe_close(void)
+{
+	if (spawn_pipe < 0)
+		return;
+	close(spawn_pipe);
+	spawn_pipe = -1;
+}
+
+// at exit (mldr failed): the parent gets the error
+static void spawn_pipe_fail(void)
+{
+	if (spawn_pipe < 0)
+		return;
+	int err = -spawn_error;
+	(void) !write(spawn_pipe, &err, sizeof(err));
+	spawn_pipe_close();
+}
+
+// an error for an exit(1) that fails the activation: a Linux errno for a file mldr can't read, mapped to XNU's (EIO for
+// any but the few they share)
+static void spawn_error_from_errno(int err)
+{
+	spawn_error = (err == ENOENT || err == EACCES || err == ENOMEM || err == ENOTDIR || err == ELOOP) ? err : EIO;
+}
+
 void* __mldr_main_stack_top = NULL;
 
 static int kernel_major = -1;
@@ -221,7 +258,8 @@ int main(int argc, char** argv, char** envp)
 		// Don't pass these special env vars down to userland
 		if (
 			ENV_VAR_MATCHES("__mldr_bprefs=")   ||
-			ENV_VAR_MATCHES("__mldr_sockpath=")
+			ENV_VAR_MATCHES("__mldr_sockpath=") ||
+			ENV_VAR_MATCHES("__mldr_spawn_pipe=")
 		) {
 			size_t len_after = 0;
 			const char* orig_envp_i_plus_one = mldr_load_results.envp[i + 1];
@@ -275,6 +313,10 @@ int main(int argc, char** argv, char** envp)
 		exit(1);
 	}
 
+	// the image is activated: posix_spawn() returns in the parent. Before any of the image's code runs, so it never sees
+	// the descriptor.
+	spawn_pipe_close();
+
 	__mldr_main_stack_top = (void*)mldr_load_results.stack_top;
 
 	start_thread(&mldr_load_results);
@@ -290,6 +332,7 @@ void load(const char* path, cpu_type_t forced_arch, bool expect_dylinker, char**
 	fd = open(path, O_RDONLY);
 	if (fd == -1)
 	{
+		spawn_error_from_errno(errno);
 		fprintf(stderr, "Cannot open %s: %s\n", path, strerror(errno));
 		exit(1);
 	}
@@ -332,6 +375,8 @@ void load(const char* path, cpu_type_t forced_arch, bool expect_dylinker, char**
 	}
 	else
 	{
+		// no image activator takes it (exec_activate_image())
+		spawn_error = ENOEXEC;
 		fprintf(stderr, "Unknown file format: %s.\n", path);
 		exit(1);
 	}
@@ -421,6 +466,8 @@ static void load_fat(int fd, cpu_type_t forced_arch, bool expect_dylinker, char*
 
 	if (best_arch.cputype == CPU_TYPE_ANY)
 	{
+		// exec_fat_imgact(): LOAD_BADARCH
+		spawn_error = XNU_EBADARCH;
 		fprintf(stderr, "No supported architecture found in fat binary.\n");
 		exit(1);
 	}
@@ -490,7 +537,12 @@ static void reexec32(char** argv)
 	selfpath[len] = '\0';
 	strcat(selfpath, "32");
 
+	// mldr32 takes posix_spawn()'s pipe on
+	if (spawn_pipe >= 0)
+		fcntl(spawn_pipe, F_SETFD, 0);
 	execv(selfpath, argv);
+	if (spawn_pipe >= 0)
+		fcntl(spawn_pipe, F_SETFD, FD_CLOEXEC);
 
 	perror("Cannot re-execute as 32-bit process");
 	abort();
@@ -529,6 +581,19 @@ static void process_special_env(struct load_results* lr) {
 		sscanf(str, "%i", &lr->lifetime_pipe);
 	}
 
+	str = getenv("__mldr_spawn_pipe");
+
+	if (str != NULL && sscanf(str, "%i", &spawn_pipe) == 1 && spawn_pipe >= 0) {
+		// close-on-exec again at once, so no later exec takes it; and reported to at exit, so the parent never waits on
+		// an mldr that failed
+		if (fcntl(spawn_pipe, F_SETFD, FD_CLOEXEC) == -1)
+			spawn_pipe = -1;
+		else
+			atexit(spawn_pipe_fail);
+	} else {
+		spawn_pipe = -1;
+	}
+
 	str = getenv("__mldr_DYLD_ROOT_PATH");
 
 	if (str != NULL && lr->root_path == NULL) {
@@ -543,6 +608,7 @@ static void unset_special_env() {
 	unsetenv("__mldr_bprefs");
 	unsetenv("__mldr_sockpath");
 	unsetenv("__mldr_lifetime_pipe");
+	unsetenv("__mldr_spawn_pipe");
 };
 
 typedef struct socket_bitmap {

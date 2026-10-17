@@ -73,14 +73,19 @@ void FUNCTION_NAME(int fd, bool expect_dylinker, struct load_results* lr)
 
 	fat_offset = lseek(fd, 0, SEEK_CUR);
 
+	// XNU reads a short file's header as zeros, and exec_mach_imgact() takes no file type but MH_EXECUTE: ENOEXEC
 	if (read(fd, &header, sizeof(header)) != sizeof(header))
 	{
+		if (!expect_dylinker)
+			spawn_error = ENOEXEC;
 		fprintf(stderr, "Cannot read the mach header.\n");
 		exit(1);
 	}
 
 	if (header.filetype != (expect_dylinker ? MH_DYLINKER : MH_EXECUTE))
 	{
+		if (!expect_dylinker)
+			spawn_error = ENOEXEC;
 		fprintf(stderr, "Found unexpected Mach-O file type: %u\n", header.filetype);
 		exit(1);
 	}
