@@ -5,11 +5,21 @@
 // (bsd/kern/kern_sysctl.c), and proc_name() answers pbi_name. Darling answered Linux's comm instead, which is "mldr"
 // for every process: backboardd logged SpringBoard as "mldr.577".
 //
+// posix_spawn() returns once the new image is activated (so the names are already set), or with the error that failed
+// the activation, leaving no process. A zombie is found by PROC_PIDTBSDINFO only when its arg asks for one.
+//
 // Prints one "ok"/"not ok" line per check; the exit status is the number of failed checks.
 
 #include <copyfile.h>
 #include <errno.h>
+#include <fcntl.h>
+#include <libkern/OSByteOrder.h>
 #include <libproc.h>
+#include <mach/machine.h>
+#include <mach-o/fat.h>
+#include <mach-o/loader.h>
+#include <pthread.h>
+#include <signal.h>
 #include <limits.h>
 #include <mach-o/dyld.h>
 #include <spawn.h>
@@ -17,6 +27,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/param.h>
+#include <sys/proc.h>
+#include <sys/resource.h>
 #include <sys/stat.h>
 #include <sys/sysctl.h>
 #include <sys/wait.h>
@@ -113,13 +125,62 @@ static void spawned(const char* path, const char* exe, const char* who)
 	}
 	posix_spawn_file_actions_destroy(&fa);
 	close(in[0]);
-	wait_for_exec(pid, exe);
+	// as soon as posix_spawn() returns: XNU set the names before
 	check_names(pid, exe, who);
 	close(in[1]);
 	int status = 0;
 	waitpid(pid, &status, 0);
 	// the child checked its own names too, and exits with its failures
 	failures += WIFEXITED(status) ? WEXITSTATUS(status) : 1;
+}
+
+static void write_file(const char* path, const void* data, size_t len)
+{
+	int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0755);
+	write(fd, data, len);
+	close(fd);
+}
+
+// posix_spawn() of an image that fails to activate: XNU's error, and no child left
+static void spawn_fails(const char* path, int want, const char* what)
+{
+	char* argv[] = { (char*) path, NULL };
+	pid_t pid = -1;
+	int status, err = posix_spawn(&pid, path, NULL, NULL, argv, environ);
+
+	check(err == want, what);
+	if (err != want)
+		printf("# got %d (%s), want %d (%s)\n", err, strerror(err), want, strerror(want));
+	errno = 0;
+	check(waitpid(-1, &status, WNOHANG) == -1 && errno == ECHILD, "... and leaves no child");
+}
+
+// the main thread's name (Linux's comm) holding ')' and spaces: the fields after it in /proc/<pid>/stat still read
+// right (a regression guard for the stat parser, which ended the name at the first ')')
+static void odd_thread_name(const char* me)
+{
+	struct proc_bsdinfo bi;
+	struct proc_bsdshortinfo si;
+	struct proc_taskinfo ti;
+	struct kinfo_proc kp;
+	size_t kl = sizeof(kp);
+	int mib[4] = { CTL_KERN, KERN_PROC, KERN_PROC_PID, getpid() };
+
+	pthread_setname_np("a) b (c");
+	memset(&bi, 0, sizeof(bi));
+	memset(&si, 0, sizeof(si));
+	memset(&ti, 0, sizeof(ti));
+	memset(&kp, 0, sizeof(kp));
+	check(proc_pidinfo(getpid(), PROC_PIDTBSDINFO, 0, &bi, sizeof(bi)) == sizeof(bi) && bi.pbi_ppid == getppid(),
+		"a main thread named \"a) b (c\": pbi_ppid is the parent");
+	check(proc_pidinfo(getpid(), PROC_PIDT_SHORTBSDINFO, 0, &si, sizeof(si)) == sizeof(si) && si.pbsi_status == SRUN
+			&& si.pbsi_ppid == getppid(),
+		"... pbsi_status is SRUN and pbsi_ppid the parent");
+	check(proc_pidinfo(getpid(), PROC_PIDTASKINFO, 0, &ti, sizeof(ti)) == sizeof(ti) && ti.pti_threadnum >= 1,
+		"... pti_threadnum counts this thread");
+	check(sysctl(mib, 4, &kp, &kl, NULL, 0) == 0 && kp.kp_eproc.e_ppid == getppid(), "... kinfo_proc's e_ppid is the parent");
+	check_names(getpid(), me, "... and the names stay the executable's");
+	pthread_setname_np("");
 }
 
 int main(int argc, char** argv)
@@ -210,7 +271,6 @@ int main(int argc, char** argv)
 		if (posix_spawn(&pid, script, &fa, NULL, sargv, environ) == 0)
 		{
 			close(sin[0]);
-			wait_for_exec(pid, interp_name);
 			snprintf(what, sizeof(what), "a #! script, as its interpreter %s", interp_name);
 			check_names(pid, interp_name, what);
 			close(sin[1]);
@@ -219,6 +279,124 @@ int main(int argc, char** argv)
 		else
 			check(0, "spawning a #! script");
 		posix_spawn_file_actions_destroy(&fa);
+	}
+
+	// a symbolic link names the process by its target, as namei() leaves the last component
+	{
+		char link_path[PATH_MAX];
+		snprintf(link_path, sizeof(link_path), "%s/proc_name_link", dir);
+		snprintf(path, sizeof(path), "%s/%s", dir, names[0]);
+		symlink(path, link_path);
+		spawned(link_path, names[0], "a symbolic link to the 2-character name, spawned");
+		unlink(link_path);
+	}
+
+	// a process darlingserver has no executable for (it exec'd a Linux program): Linux's comm
+	{
+		char* largv[] = { "/Volumes/SystemRoot/usr/bin/sleep", "30", NULL };
+		struct proc_bsdinfo bi;
+		if (posix_spawn(&pid, largv[0], NULL, NULL, largv, environ) == 0)
+		{
+			// the exec of a Linux program isn't Darling's to wait for: wait until darlingserver forgets it
+			for (int i = 0; i < 200; i++)
+			{
+				memset(&bi, 0, sizeof(bi));
+				if (proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &bi, sizeof(bi)) == sizeof(bi) && strcmp(bi.pbi_name, "sleep") == 0)
+					break;
+				usleep(50000);
+			}
+			check_names(pid, "sleep", "a Linux program, by Linux's comm");
+			kill(pid, SIGKILL);
+			waitpid(pid, NULL, 0);
+		}
+		else
+			check(0, "spawning a Linux program");
+	}
+
+	// a zombie: found only when asked for (arg 1), and proc_name() (arg 0) doesn't
+	{
+		struct proc_bsdinfo bi;
+		struct proc_bsdshortinfo si;
+		char zname[2 * MAXCOMLEN + 1] = "";
+		pid = fork();
+		if (pid == 0)
+			_exit(0);
+		for (int i = 0; i < 200; i++)
+		{
+			memset(&si, 0, sizeof(si));
+			if (proc_pidinfo(pid, PROC_PIDT_SHORTBSDINFO, 1, &si, sizeof(si)) == sizeof(si) && si.pbsi_status == SZOMB)
+				break;
+			usleep(50000);
+		}
+		check(si.pbsi_status == SZOMB, "a zombie, asked for: PROC_PIDT_SHORTBSDINFO finds it, SZOMB");
+		errno = 0;
+		check(proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &bi, sizeof(bi)) <= 0 && errno == ESRCH,
+			"... not asked for: PROC_PIDTBSDINFO fails with ESRCH");
+		check(proc_name(pid, zname, sizeof(zname)) == 0 && zname[0] == '\0', "... and proc_name() names nothing");
+		waitpid(pid, NULL, 0);
+	}
+
+	// sysctl's p_nice is the process's nice value (a regression guard: it read another field of /proc/<pid>/stat)
+	{
+		int ready[2], go[2];
+		char c;
+		struct kinfo_proc kp;
+		size_t kl = sizeof(kp);
+		pipe(ready);
+		pipe(go);
+		pid = fork();
+		if (pid == 0)
+		{
+			setpriority(PRIO_PROCESS, 0, 5);
+			write(ready[1], "x", 1);
+			read(go[0], &c, 1);
+			_exit(0);
+		}
+		read(ready[0], &c, 1);
+		int mib[4] = { CTL_KERN, KERN_PROC, KERN_PROC_PID, pid };
+		memset(&kp, 0, sizeof(kp));
+		check(sysctl(mib, 4, &kp, &kl, NULL, 0) == 0 && kp.kp_proc.p_nice == 5, "a process at nice 5: kinfo_proc's p_nice is 5");
+		write(go[1], "x", 1);
+		waitpid(pid, NULL, 0);
+	}
+
+	odd_thread_name(me);
+
+	// images that fail to activate (kern_exec.c): no architecture of a universal file runs here (EBADARCH, as
+	// load_return_to_errno() maps LOAD_BADARCH); a Mach-O too short for its header (XNU reads zeros, which
+	// exec_mach_imgact() takes as no MH_EXECUTE: ENOEXEC); a #! script whose interpreter is missing (ENOENT)
+	{
+		char bad[PATH_MAX];
+		struct
+		{
+			struct fat_header h;
+			struct fat_arch a;
+			struct mach_header_64 m;
+		} fat;
+		memset(&fat, 0, sizeof(fat));
+		fat.h.magic = OSSwapHostToBigInt32(FAT_MAGIC);
+		fat.h.nfat_arch = OSSwapHostToBigInt32(1);
+		fat.a.cputype = OSSwapHostToBigInt32(CPU_TYPE_ARM64);
+		fat.a.offset = OSSwapHostToBigInt32(offsetof(__typeof__(fat), m));
+		fat.a.size = OSSwapHostToBigInt32(sizeof(fat.m));
+		fat.m.magic = MH_MAGIC_64;
+		fat.m.cputype = CPU_TYPE_ARM64;
+		fat.m.filetype = MH_EXECUTE;
+		snprintf(bad, sizeof(bad), "%s/proc_name_arm64", dir);
+		write_file(bad, &fat, sizeof(fat));
+		spawn_fails(bad, EBADARCH, "a universal file with only arm64: posix_spawn() fails with EBADARCH");
+		unlink(bad);
+
+		uint32_t short_macho[2] = { MH_MAGIC_64, CPU_TYPE_X86_64 };
+		snprintf(bad, sizeof(bad), "%s/proc_name_short", dir);
+		write_file(bad, short_macho, sizeof(short_macho));
+		spawn_fails(bad, ENOEXEC, "a Mach-O too short for its header: posix_spawn() fails with ENOEXEC");
+		unlink(bad);
+
+		snprintf(bad, sizeof(bad), "%s/proc_name_no_interpreter", dir);
+		write_file(bad, "#!/no/such/interpreter\n", 23);
+		spawn_fails(bad, ENOENT, "a #! script whose interpreter is missing: posix_spawn() fails with ENOENT");
+		unlink(bad);
 	}
 
 	unlink(script);
