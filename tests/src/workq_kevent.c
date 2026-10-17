@@ -284,11 +284,13 @@ static void test_workloop_thread_request(void)
 	check(rv == 0, "workloop: deleting the thread request", strerror(rv));
 }
 
-static void test_workloop_estale(void)
+static void test_workloop_debounce(void)
 {
 	const uint64_t id = 0x2000;
 	uint64_t value = 5;
+	uint64_t pair[2] = { 5, 5 };
 	struct kevent_qos_s tr = thread_request(id);
+	struct kevent_qos_s del = { .ident = id, .filter = EVFILT_WORKLOOP, .flags = EV_DELETE, .fflags = NOTE_WL_THREAD_REQUEST };
 	int rv;
 
 	tr.ext[EV_EXTIDX_WL_ADDR] = (uintptr_t)&value;
@@ -297,6 +299,16 @@ static void test_workloop_estale(void)
 	rv = workloop_change(id, &tr);
 	check(rv == ESTALE && tr.ext[EV_EXTIDX_WL_VALUE] == 5, "workloop: a stale debounce value fails with ESTALE",
 		strerror(rv));
+
+	// XNU reads the value with copyin_atomic64(), which fails an address that isn't 8-byte aligned. Darling read it
+	// (and on i386 that read needed libatomic, so libsystem_kernel didn't link).
+	tr = thread_request(id);
+	tr.ext[EV_EXTIDX_WL_ADDR] = (uintptr_t)pair + 4;
+	tr.ext[EV_EXTIDX_WL_MASK] = 0;
+	rv = workloop_change(id, &tr);
+	check(rv == EINVAL, "workloop: a misaligned debounce address fails with EINVAL", strerror(rv));
+	rv = workloop_change(id, &del);
+	check(rv == ENOENT, "workloop: and attaches no thread request", strerror(rv));
 }
 
 static volatile bool sync_waiter_woken;
@@ -448,7 +460,7 @@ int main(void)
 	test_deferred_delete();
 	test_manager_errors();
 	test_workloop_thread_request();
-	test_workloop_estale();
+	test_workloop_debounce();
 	test_workloop_sync();
 	test_workloop_knote();
 	test_identity();
