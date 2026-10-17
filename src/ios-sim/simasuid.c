@@ -1,45 +1,55 @@
 /*
  * simasuid: runs a program as another user, as CoreSimulator runs a device's launchd_sim as the user who boots the
- * device (never root). simboot.sh starts the device's launchd_sim_trampoline through it when SIM_UID is set.
+ * device. simboot.sh starts the device's launchd_sim_trampoline through it (SIM_UID, SIM_GID; tools/ios-sim/README.md
+ * says why).
  *
- * Usage: simasuid <uid> <program> [args...]
+ * Usage: simasuid <uid> <gid> <program> [args...]
  *
- * The group is the uid's number too (a Mac's first user is uid 501, gid 20; the simulator's processes only ever ask
- * for their uid). Darling keeps the uid in darlingserver: the Linux process stays as it was.
+ * The groups become just <gid>, as a Mac user's processes have their primary group (staff, 20, for the first user):
+ * none of the caller's (root's) stays. Darling keeps the ids in darlingserver; the Linux process stays as it was.
  *
  * From willi/kage's sim/asuid (d8c0d15), which runs a Mac program as a device's user from inside a device. This one
  * is a Mac program itself, so it leaves DYLD_ROOT_PATH as it is.
  */
 #include <errno.h>
+#include <grp.h>
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 
-int main(int argc, char** argv)
+// a uid or gid: 0 to INT_MAX, as Darling keeps them (a negative one means "no change" to darlingserver)
+static int parse_id(const char* s, long* id)
 {
 	char* end;
-	long uid;
-
-	if (argc < 3)
-	{
-		fprintf(stderr, "usage: %s <uid> <program> [args...]\n", argv[0]);
-		return 64;
-	}
 	errno = 0;
-	uid = strtol(argv[1], &end, 10);
-	if (errno != 0 || *end != '\0' || end == argv[1] || uid < 0 || uid > 0x7fffffff)
+	*id = strtol(s, &end, 10);
+	return errno == 0 && end != s && *end == '\0' && *id >= 0 && *id <= INT_MAX;
+}
+
+int main(int argc, char** argv)
+{
+	long uid, gid;
+
+	if (argc < 4)
 	{
-		fprintf(stderr, "simasuid: not a uid: %s\n", argv[1]);
+		fprintf(stderr, "usage: %s <uid> <gid> <program> [args...]\n", argv[0]);
 		return 64;
 	}
-	// the group first: a process that isn't root can't change it after
-	if (setgid((gid_t) uid) != 0 || setuid((uid_t) uid) != 0)
+	if (!parse_id(argv[1], &uid) || !parse_id(argv[2], &gid))
 	{
-		fprintf(stderr, "simasuid: setuid(%ld): %s\n", uid, strerror(errno));
+		fprintf(stderr, "simasuid: not a uid and gid: %s %s\n", argv[1], argv[2]);
+		return 64;
+	}
+	// the groups and the gid first: a process that isn't root can change neither after
+	gid_t groups[1] = { (gid_t) gid };
+	if (setgroups(1, groups) != 0 || setgid((gid_t) gid) != 0 || setuid((uid_t) uid) != 0)
+	{
+		fprintf(stderr, "simasuid: can't become uid %ld gid %ld: %s\n", uid, gid, strerror(errno));
 		return 1;
 	}
-	execv(argv[2], argv + 2);
-	fprintf(stderr, "simasuid: %s: %s\n", argv[2], strerror(errno));
+	execv(argv[3], argv + 3);
+	fprintf(stderr, "simasuid: %s: %s\n", argv[3], strerror(errno));
 	return 127;
 }

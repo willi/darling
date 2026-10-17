@@ -10,8 +10,8 @@
 # SIM_DAEMONS lists the runtime's LaunchDaemons the device loads (labels; default: cfprefsd, and logd with its
 # helper; "all": every one, as CoreSimulator loads them). launchd_sim starts each when a client first looks it up, or at
 # load if it says so. SIM_EXTRA_ENVIRONMENT adds NAME=VALUE pairs (space-separated) to the environment of the device's
-# launchd_sim and its jobs. SIM_UID is the user the device runs as: launchd_sim, and every process it starts. The
-# device's other variables are in simdevice.sh.
+# launchd_sim and its jobs. SIM_UID and SIM_GID are the user and group the device runs as: launchd_sim, and every
+# process it starts (README.md). The device's other variables are in simdevice.sh.
 set -eu
 : "${SIM_RUNTIME_ROOT:?set SIM_RUNTIME_ROOT to the RuntimeRoot of the runtime}"
 # shellcheck source=simdevice.sh
@@ -29,6 +29,19 @@ if [ $# -gt 0 ]; then
 	echo "usage: SIM_RUNTIME_ROOT=<RuntimeRoot> $0" >&2
 	exit 64
 fi
+# simasuid takes 0 to 2147483647, as Darling keeps ids; here, before a job that would fail out of sight
+for id in "$SIM_UID" "$SIM_GID"; do
+	case $id in
+	'' | *[!0-9]* | ???????????*)
+		echo "SIM_UID and SIM_GID must be numbers from 0 to 2147483647: $SIM_UID, $SIM_GID" >&2
+		exit 64
+		;;
+	esac
+	if [ "$id" -gt 2147483647 ]; then
+		echo "SIM_UID and SIM_GID must be numbers from 0 to 2147483647: $SIM_UID, $SIM_GID" >&2
+		exit 64
+	fi
+done
 if launchctl list "$NAME" >/dev/null 2>&1; then
 	if grep -qF "$SIM_DEVICE_BOOTED" "$LOG" 2>/dev/null; then
 		echo "$NAME is already booted" >&2
@@ -116,10 +129,10 @@ EOF
 
 # the job CoreSimulator submits (to the domain of the user who boots the device, so launchd_sim runs as that user):
 # the trampoline checks the device's name in and becomes launchd_sim. Darling's launchd runs its jobs as root, so a
-# device with another SIM_UID starts through simasuid.
+# device as anyone else starts through simasuid.
 as_user=
-if [ "$SIM_UID" != 0 ]; then
-	as_user="<string>/usr/libexec/ios-sim/simasuid</string><string>$(x "$SIM_UID")</string>"
+if [ "$SIM_UID" != 0 ] || [ "$SIM_GID" != 0 ]; then
+	as_user="<string>/usr/libexec/ios-sim/simasuid</string><string>$SIM_UID</string><string>$SIM_GID</string>"
 fi
 cat >"$JOB" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>

@@ -50,13 +50,20 @@ export SIM_RUNTIME_ROOT=...
 `simboot.sh` needs umask 022 (or one that also keeps group and others from writing): `launchctl` skips job plists that
 group or others can write. A `darling shell` has `launchd`'s umask, which `darling` starts with at least 022.
 `launchd_sim` logs to `/private/var/tmp/com.apple.CoreSimulator.SimDevice.<udid>/launchd.log`.
-The device runs as `SIM_UID` (501 by default): CoreSimulator submits the job to the domain of the user who boots the
-device, so `launchd_sim` and everything it starts run as that user, never as root. Darling's `launchd` runs its jobs
-as root, so `simboot.sh` starts the trampoline through `simasuid`, which sets the uid and gid and execs it. Some
-daemons behave differently as root: libAccessibility, for one, asks backboardd over IPC for its preferences when
-`geteuid()` is 0, and backboardd then waits on itself. `SIM_UID=0` keeps the old behaviour, for debugging. Darling
-keeps the uid in darlingserver, and two things don't follow it yet: `stat()` reports every file as owned by the caller,
-and `proc_pidinfo()`/sysctl report the caller's uid for every process.
+The device runs as `SIM_UID` and `SIM_GID` (501 and 20 by default, a Mac's first user and its staff group):
+CoreSimulator submits the job to the domain of the user who boots the device, so `launchd_sim` and everything it
+starts run as that user, never as root. Darling's `launchd` runs its jobs as root, so `simboot.sh` starts the
+trampoline through `simasuid`, which sets the groups (to just the gid), the gid and the uid, and execs it. Some of the
+runtime takes other paths as root: libAccessibility, for one, asks backboardd over IPC for each preference when
+`geteuid()` is 0, and backboardd, which serves that IPC, then waits on itself. `SIM_UID=0 SIM_GID=0` keep the old
+behaviour, for debugging. Whatever else talks to the device (a per-user launchd domain, `user/<uid>`) should use the
+same `SIM_UID`. Darling keeps the ids in darlingserver, and they don't reach everywhere:
+- `stat()` reports every file as owned by the caller, so a device at 501 sees its root-owned data as its own;
+- `proc_pidinfo()`/sysctl report the caller's uid for every process;
+- `setuid()` needs no privilege: a process at 501 can become root again (a job whose plist says `UserName root`
+  could), where XNU refuses;
+- the prefix's users are root and the user who created it, so the directory has no user 501: libc's
+  `getgroups()`, which answers a user's groups from the directory, fails at 501.
 `simshutdown.sh` unloads the device's job, as `simctl shutdown` does: `launchd` sends `launchd_sim` SIGTERM, and
 `launchd_sim` stops the device's processes and exits. The device's variables (`SIM_UDID` and so on) are in
 `simdevice.sh`.
