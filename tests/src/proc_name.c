@@ -106,24 +106,56 @@ static void wait_for_exec(pid_t pid, const char* exe)
 	}
 }
 
+// file actions that close stderr, then dup over the descriptor posix_spawn()'s own pipe gets next
+static void over_the_pipe(posix_spawn_file_actions_t* fa, int source)
+{
+	int lowest = dup(0);
+	close(lowest);
+	posix_spawn_file_actions_addclose(fa, 2);
+	posix_spawn_file_actions_adddup2(fa, source, lowest + 1);
+}
+
+enum spawn_how
+{
+	SPAWN_PLAIN,
+	// file actions that close stderr, then dup over the descriptor posix_spawn()'s own pipe gets
+	SPAWN_OVER_THE_PIPE,
+	// POSIX_SPAWN_CLOEXEC_DEFAULT, which closes what no action inherits
+	SPAWN_CLOEXEC_DEFAULT,
+};
+
 // runs path (named exe) with "wait" until its stdin closes, and checks its names from here
-static void spawned(const char* path, const char* exe, const char* who)
+static void spawned_how(const char* path, const char* exe, const char* who, enum spawn_how how)
 {
 	int in[2];
 	pid_t pid;
 	posix_spawn_file_actions_t fa;
+	posix_spawnattr_t attr;
 	char* argv[] = { (char*) path, "wait", (char*) exe, NULL };
 
 	pipe(in);
 	posix_spawn_file_actions_init(&fa);
+	posix_spawnattr_init(&attr);
 	posix_spawn_file_actions_adddup2(&fa, in[0], 0);
 	posix_spawn_file_actions_addclose(&fa, in[1]);
-	if (posix_spawn(&pid, path, &fa, NULL, argv, environ) != 0)
+	if (how == SPAWN_OVER_THE_PIPE)
+		over_the_pipe(&fa, in[0]);
+	else if (how == SPAWN_CLOEXEC_DEFAULT)
+	{
+		posix_spawnattr_setflags(&attr, POSIX_SPAWN_CLOEXEC_DEFAULT);
+		posix_spawn_file_actions_addinherit_np(&fa, 1);
+		posix_spawn_file_actions_addinherit_np(&fa, 2);
+	}
+	int err = posix_spawn(&pid, path, &fa, &attr, argv, environ);
+	posix_spawn_file_actions_destroy(&fa);
+	posix_spawnattr_destroy(&attr);
+	if (err != 0)
 	{
 		check(0, who);
+		close(in[0]);
+		close(in[1]);
 		return;
 	}
-	posix_spawn_file_actions_destroy(&fa);
 	close(in[0]);
 	// as soon as posix_spawn() returns: XNU set the names before
 	check_names(pid, exe, who);
@@ -134,25 +166,43 @@ static void spawned(const char* path, const char* exe, const char* who)
 	failures += WIFEXITED(status) ? WEXITSTATUS(status) : 1;
 }
 
-static void write_file(const char* path, const void* data, size_t len)
+static void spawned(const char* path, const char* exe, const char* who)
 {
-	int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0755);
-	write(fd, data, len);
-	close(fd);
+	spawned_how(path, exe, who, SPAWN_PLAIN);
 }
 
-// posix_spawn() of an image that fails to activate: XNU's error, and no child left
-static void spawn_fails(const char* path, int want, const char* what)
+static void write_file_mode(const char* path, const void* data, size_t len, mode_t mode)
 {
-	char* argv[] = { (char*) path, NULL };
+	int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, mode);
+	write(fd, data, len);
+	close(fd);
+	chmod(path, mode);
+}
+
+static void write_file(const char* path, const void* data, size_t len)
+{
+	write_file_mode(path, data, len, 0755);
+}
+
+// posix_spawn() of an image that fails to activate, with file actions fa (or none): XNU's error, and no child left
+static void spawn_fails_with(const char* path, int want, const char* what, posix_spawn_file_actions_t* fa)
+{
+	// "exit": should a copy of this test run after all, it exits at once
+	char* argv[] = { (char*) path, "exit", NULL };
 	pid_t pid = -1;
-	int status, err = posix_spawn(&pid, path, NULL, NULL, argv, environ);
+	int status, err = posix_spawn(&pid, path, fa, NULL, argv, environ);
 
 	check(err == want, what);
 	if (err != want)
 		printf("# got %d (%s), want %d (%s)\n", err, strerror(err), want, strerror(want));
+	check(pid == -1, "... gives no pid");
 	errno = 0;
 	check(waitpid(-1, &status, WNOHANG) == -1 && errno == ECHILD, "... and leaves no child");
+}
+
+static void spawn_fails(const char* path, int want, const char* what)
+{
+	spawn_fails_with(path, want, what, NULL);
 }
 
 // the main thread's name (Linux's comm) holding ')' and spaces: the fields after it in /proc/<pid>/stat still read
@@ -188,6 +238,10 @@ int main(int argc, char** argv)
 	char self[PATH_MAX], dir[PATH_MAX], path[PATH_MAX], script[PATH_MAX], interp[PATH_MAX], what[256];
 	uint32_t n = sizeof(self);
 	const char* me;
+
+	// a copy that is to fail to run, and ran
+	if (argc >= 2 && strcmp(argv[1], "exit") == 0)
+		return 1;
 
 	// a spawned copy: check our own names, then wait for stdin to close
 	if (argc == 3 && strcmp(argv[1], "wait") == 0)
@@ -297,7 +351,8 @@ int main(int argc, char** argv)
 		struct proc_bsdinfo bi;
 		if (posix_spawn(&pid, largv[0], NULL, NULL, largv, environ) == 0)
 		{
-			// the exec of a Linux program isn't Darling's to wait for: wait until darlingserver forgets it
+			// posix_spawn() returns at the Linux exec, and darlingserver forgets the process when it sees it gone, a
+			// moment later: until then it has the spawner's names. XNU has no such case; wait for that
 			for (int i = 0; i < 200; i++)
 			{
 				memset(&bi, 0, sizeof(bi));
@@ -362,9 +417,18 @@ int main(int argc, char** argv)
 
 	odd_thread_name(me);
 
-	// images that fail to activate (kern_exec.c): no architecture of a universal file runs here (EBADARCH, as
-	// load_return_to_errno() maps LOAD_BADARCH); a Mach-O too short for its header (XNU reads zeros, which
-	// exec_mach_imgact() takes as no MH_EXECUTE: ENOEXEC); a #! script whose interpreter is missing (ENOENT)
+	// file actions over the spawn's own pipe, which moves out of their way and still reaches mldr, and
+	// POSIX_SPAWN_CLOEXEC_DEFAULT, which must still hand the pipe to mldr
+	snprintf(path, sizeof(path), "%s/%s", dir, names[0]);
+	spawned_how(path, names[0], "file actions over the spawn's pipe, spawned", SPAWN_OVER_THE_PIPE);
+	spawned_how(path, names[0], "POSIX_SPAWN_CLOEXEC_DEFAULT, spawned", SPAWN_CLOEXEC_DEFAULT);
+
+	// images that fail to activate (kern_exec.c). These architecture cases are Darling's on x86_64: an arm64 Mac runs
+	// arm64. No architecture of a universal file runs here, nor a thin arm64 one (EBADARCH, as load_return_to_errno()
+	// maps LOAD_BADARCH and exec_mach_imgact() fails grade_binary()); a byte-swapped Mach-O is recognized and not run
+	// (EBADARCH); a Mach-O too short for its header (XNU reads zeros, which exec_mach_imgact() takes as no MH_EXECUTE:
+	// ENOEXEC); a #! script whose interpreter is missing (ENOENT); an image or interpreter without an execute bit
+	// (exec_check_permissions(): EACCES)
 	{
 		char bad[PATH_MAX];
 		struct
@@ -387,15 +451,89 @@ int main(int argc, char** argv)
 		spawn_fails(bad, EBADARCH, "a universal file with only arm64: posix_spawn() fails with EBADARCH");
 		unlink(bad);
 
+		write_file(bad, &fat.m, sizeof(fat.m));
+		spawn_fails(bad, EBADARCH, "a thin arm64 Mach-O: posix_spawn() fails with EBADARCH");
+		fat.m.magic = MH_CIGAM_64;
+		fat.m.cputype = CPU_TYPE_X86_64;
+		write_file(bad, &fat.m, sizeof(fat.m));
+		spawn_fails(bad, EBADARCH, "a byte-swapped Mach-O: posix_spawn() fails with EBADARCH");
+		unlink(bad);
+
 		uint32_t short_macho[2] = { MH_MAGIC_64, CPU_TYPE_X86_64 };
 		snprintf(bad, sizeof(bad), "%s/proc_name_short", dir);
 		write_file(bad, short_macho, sizeof(short_macho));
 		spawn_fails(bad, ENOEXEC, "a Mach-O too short for its header: posix_spawn() fails with ENOEXEC");
+		// a regression guard: the pipe moved onto the stderr the actions closed, and mldr's message was read as the error
+		{
+			posix_spawn_file_actions_t fa;
+			posix_spawn_file_actions_init(&fa);
+			over_the_pipe(&fa, 0);
+			spawn_fails_with(bad, ENOEXEC, "... also with file actions over the spawn's pipe", &fa);
+			posix_spawn_file_actions_destroy(&fa);
+		}
 		unlink(bad);
 
 		snprintf(bad, sizeof(bad), "%s/proc_name_no_interpreter", dir);
 		write_file(bad, "#!/no/such/interpreter\n", 23);
 		spawn_fails(bad, ENOENT, "a #! script whose interpreter is missing: posix_spawn() fails with ENOENT");
+		unlink(bad);
+
+		char noexec[PATH_MAX], line[PATH_MAX + 16];
+		snprintf(noexec, sizeof(noexec), "%s/proc_name_noexec", dir);
+		copyfile(self, noexec, NULL, COPYFILE_DATA);
+		chmod(noexec, 0644);
+		spawn_fails(noexec, EACCES, "a Mach-O without an execute bit: posix_spawn() fails with EACCES");
+		pid = fork();
+		if (pid == 0)
+		{
+			char* eargv[] = { noexec, "exit", NULL };
+			execve(noexec, eargv, environ);
+			_exit(errno);
+		}
+		status = 0;
+		waitpid(pid, &status, 0);
+		check(WIFEXITED(status) && WEXITSTATUS(status) == EACCES, "... and execve() returns EACCES to its caller");
+
+		snprintf(bad, sizeof(bad), "%s/proc_name_noexec_interpreter", dir);
+		int len = snprintf(line, sizeof(line), "#!%s exit\n", noexec);
+		write_file(bad, line, len);
+		spawn_fails(bad, EACCES, "a #! script whose interpreter has no execute bit: posix_spawn() fails with EACCES");
+		unlink(bad);
+		unlink(noexec);
+	}
+
+	// a spawner with stdout and stderr closed, whose pipe(2) answers descriptors 1 and 2: mldr's message for an image
+	// that fails is not the error (a regression guard: it was read as one, and the child left unreaped)
+	{
+		char bad[PATH_MAX];
+		int res[2];
+		uint32_t short_macho[2] = { MH_MAGIC_64, CPU_TYPE_X86_64 };
+		snprintf(bad, sizeof(bad), "%s/proc_name_short", dir);
+		write_file(bad, short_macho, sizeof(short_macho));
+		pipe(res);
+		pid = fork();
+		if (pid == 0)
+		{
+			char* bargv[] = { bad, NULL };
+			pid_t child = -1, left;
+			int r[2];
+			close(1);
+			close(2);
+			r[0] = posix_spawn(&child, bad, NULL, NULL, bargv, environ);
+			left = waitpid(-1, NULL, WNOHANG);
+			r[1] = left == -1 && errno == ECHILD;
+			write(res[1], r, sizeof(r));
+			_exit(0);
+		}
+		int r[2] = { -1, 0 };
+		close(res[1]);
+		read(res[0], r, sizeof(r));
+		close(res[0]);
+		waitpid(pid, NULL, 0);
+		check(r[0] == ENOEXEC, "stdout and stderr closed: a Mach-O too short for its header still fails with ENOEXEC");
+		if (r[0] != ENOEXEC)
+			printf("# got %d\n", r[0]);
+		check(r[1], "... and leaves no child");
 		unlink(bad);
 	}
 
