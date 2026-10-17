@@ -14,8 +14,8 @@ struct calldef
 	void (*print_retval)(xtrace::String* log, int nr, uintptr_t rv);
 };
 
-void handle_generic_entry(xtrace::String* log, const struct calldef* defs, const char* type, int nr, void* args[]);
-void handle_generic_exit(xtrace::String* log, const struct calldef* defs, const char* type, uintptr_t retval, int force_split);
+void handle_generic_entry(xtrace::String* log, const struct calldef* defs, size_t count, const char* type, int nr, void* args[]);
+void handle_generic_exit(xtrace::String* log, const struct calldef* defs, size_t count, const char* type, uintptr_t retval, int force_split);
 
 void xtrace_set_gray_color(xtrace::String* log);
 void xtrace_reset_color(xtrace::String* log);
