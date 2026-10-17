@@ -77,7 +77,7 @@ void FUNCTION_NAME(int fd, bool expect_dylinker, struct load_results* lr)
 	if (read(fd, &header, sizeof(header)) != sizeof(header))
 	{
 		if (!expect_dylinker)
-			spawn_error = ENOEXEC;
+			spawn_error = XNU_ENOEXEC;
 		fprintf(stderr, "Cannot read the mach header.\n");
 		exit(1);
 	}
@@ -85,8 +85,21 @@ void FUNCTION_NAME(int fd, bool expect_dylinker, struct load_results* lr)
 	if (header.filetype != (expect_dylinker ? MH_DYLINKER : MH_EXECUTE))
 	{
 		if (!expect_dylinker)
-			spawn_error = ENOEXEC;
+			spawn_error = XNU_ENOEXEC;
 		fprintf(stderr, "Found unexpected Mach-O file type: %u\n", header.filetype);
+		exit(1);
+	}
+
+	// exec_mach_imgact()'s grade_binary(): another architecture's image (an arm64-only build) doesn't run
+#if defined(GEN_64BIT)
+	const cpu_type_t loader_cputype = CPU_TYPE_X86_64;
+#else
+	const cpu_type_t loader_cputype = CPU_TYPE_X86;
+#endif
+	if (header.cputype != loader_cputype)
+	{
+		spawn_error = XNU_EBADARCH;
+		fprintf(stderr, "Cannot load a Mach-O for CPU type 0x%x\n", header.cputype);
 		exit(1);
 	}
 

@@ -95,19 +95,22 @@ struct load_results mldr_load_results = {0};
 
 static uint32_t stack_size = 0;
 
-static const char* const skip_env_vars[] = {
-	"__mldr_bprefs=",
-	"__mldr_sockpath=",
-	"__mldr_lifetime_pipe",
-};
-
-// posix_spawn()'s pipe (__mldr_spawn_pipe): XNU's posix_spawn() returns once the new image is activated, so the parent
-// waits for this to close, or for the error that failed the activation (a negative errno, as sys_posix_spawn() returns
-// it). -1 when there's none, or once it's closed.
+// posix_spawn()'s pipe, __mldr_spawn_pipe (the contract is sys_execve_spawn()'s, in darling-xnu's
+// xnu_syscall/bsd/impl/process/execve.h): the parent waits for it to close, once the image is activated, or for the
+// error that failed the activation (a negative XNU errno). -1 when there's none, or once it's closed. A signal that
+// kills mldr before then also closes it, and the parent takes that for success.
 static int spawn_pipe = -1;
 
 // the error, as XNU's load_return_to_errno() (xnu-12377.121.6 bsd/kern/kern_exec.c) maps it, of an activation that fails
-// here; LOAD_FAILURE's by default. XNU's numbers: Linux has no EBADARCH and the others.
+// here; LOAD_FAILURE's by default. XNU's numbers (this is built against Linux's errno.h, whose differ).
+#define XNU_ENOENT 2
+#define XNU_EIO 5
+#define XNU_ENOEXEC 8
+#define XNU_ENOMEM 12
+#define XNU_EACCES 13
+#define XNU_ENOTDIR 20
+#define XNU_ELOOP 62
+#define XNU_ENAMETOOLONG 63
 #define XNU_EBADEXEC 85
 #define XNU_EBADARCH 86
 #define XNU_EBADMACHO 88
@@ -131,11 +134,19 @@ static void spawn_pipe_fail(void)
 	spawn_pipe_close();
 }
 
-// an error for an exit(1) that fails the activation: a Linux errno for a file mldr can't read, mapped to XNU's (EIO for
-// any but the few they share)
+// the error of an open() that fails the activation: Linux's errno as XNU's (EIO for any namei() doesn't return)
 static void spawn_error_from_errno(int err)
 {
-	spawn_error = (err == ENOENT || err == EACCES || err == ENOMEM || err == ENOTDIR || err == ELOOP) ? err : EIO;
+	switch (err)
+	{
+		case ENOENT: spawn_error = XNU_ENOENT; break;
+		case EACCES: spawn_error = XNU_EACCES; break;
+		case ENOMEM: spawn_error = XNU_ENOMEM; break;
+		case ENOTDIR: spawn_error = XNU_ENOTDIR; break;
+		case ELOOP: spawn_error = XNU_ELOOP; break;
+		case ENAMETOOLONG: spawn_error = XNU_ENAMETOOLONG; break;
+		default: spawn_error = XNU_EIO; break;
+	}
 }
 
 void* __mldr_main_stack_top = NULL;
@@ -349,16 +360,26 @@ void load(const char* path, cpu_type_t forced_arch, bool expect_dylinker, char**
 		exit(1);
 	}
 
-	if (magic == MH_MAGIC_64 || magic == MH_CIGAM_64)
+	// exec_mach_imgact() recognizes a byte-swapped Mach-O and runs none
+	if (magic == MH_CIGAM_64 || magic == MH_CIGAM)
+	{
+		spawn_error = XNU_EBADARCH;
+		fprintf(stderr, "Cannot load a byte-swapped Mach-O: %s.\n", path);
+		exit(1);
+	}
+
+	if (magic == MH_MAGIC_64)
 	{
 #ifdef __x86_64__
 		lseek(fd, 0, SEEK_SET);
 		load64(fd, expect_dylinker, lr);
 #else
-		abort();
+		spawn_error = XNU_EBADARCH;
+		fprintf(stderr, "Cannot load a 64-bit Mach-O as a 32-bit process: %s.\n", path);
+		exit(1);
 #endif
 	}
-	else if (magic == MH_MAGIC || magic == MH_CIGAM)
+	else if (magic == MH_MAGIC)
 	{
 #if !__x86_64__
 		lseek(fd, 0, SEEK_SET);
@@ -376,7 +397,7 @@ void load(const char* path, cpu_type_t forced_arch, bool expect_dylinker, char**
 	else
 	{
 		// no image activator takes it (exec_activate_image())
-		spawn_error = ENOEXEC;
+		spawn_error = XNU_ENOEXEC;
 		fprintf(stderr, "Unknown file format: %s.\n", path);
 		exit(1);
 	}
@@ -393,6 +414,8 @@ static void load_fat(int fd, cpu_type_t forced_arch, bool expect_dylinker, char*
 
 	if (read(fd, &fhdr, sizeof(fhdr)) != sizeof(fhdr))
 	{
+		// fatfile_validate_fatarches(): LOAD_BADMACHO
+		spawn_error = XNU_EBADMACHO;
 		fprintf(stderr, "Cannot read fat file header.\n");
 		exit(1);
 	}
@@ -411,6 +434,7 @@ static void load_fat(int fd, cpu_type_t forced_arch, bool expect_dylinker, char*
 
 		if (read(fd, &arch, sizeof(arch)) != sizeof(arch))
 		{
+			spawn_error = XNU_EBADMACHO;
 			fprintf(stderr, "Cannot read fat_arch header.\n");
 			exit(1);
 		}
@@ -484,7 +508,9 @@ static void load_fat(int fd, cpu_type_t forced_arch, bool expect_dylinker, char*
 #elif __aarch64__
 	#error TODO: aarch64
 #else
-		abort();
+		spawn_error = XNU_EBADARCH;
+		fprintf(stderr, "Cannot load a 64-bit Mach-O as a 32-bit process.\n");
+		exit(1);
 #endif
 	} else {
 #if !__x86_64__
@@ -528,24 +554,35 @@ static void reexec32(char** argv)
 	ssize_t len;
 
 	len = readlink("/proc/self/exe", selfpath, sizeof(selfpath)-3);
+	// exit(), not abort(): the parent waiting in posix_spawn() gets the error
 	if (len == -1)
 	{
 		perror("Cannot readlink /proc/self/exe");
-		abort();
+		exit(1);
 	}
 
 	selfpath[len] = '\0';
 	strcat(selfpath, "32");
 
-	// mldr32 takes posix_spawn()'s pipe on
+	// mldr32 takes posix_spawn()'s pipe on, where it is now
 	if (spawn_pipe >= 0)
+	{
+		char fd[16];
+		snprintf(fd, sizeof(fd), "%d", spawn_pipe);
+		setenv("__mldr_spawn_pipe", fd, 1);
 		fcntl(spawn_pipe, F_SETFD, 0);
+	}
 	execv(selfpath, argv);
+	// no mldr32, no 32-bit support: XNU since macOS 10.15 answers EBADARCH ("Unsupported 32-bit executable",
+	// exec_mach_imgact())
+	int err = errno;
+	if (err == ENOENT)
+		spawn_error = XNU_EBADARCH;
 	if (spawn_pipe >= 0)
 		fcntl(spawn_pipe, F_SETFD, FD_CLOEXEC);
 
-	perror("Cannot re-execute as 32-bit process");
-	abort();
+	fprintf(stderr, "Cannot re-execute as 32-bit process: %s\n", strerror(err));
+	exit(1);
 }
 
 // Given that there's no proper way of passing special parameters to the binary loader
@@ -584,11 +621,12 @@ static void process_special_env(struct load_results* lr) {
 	str = getenv("__mldr_spawn_pipe");
 
 	if (str != NULL && sscanf(str, "%i", &spawn_pipe) == 1 && spawn_pipe >= 0) {
-		// close-on-exec again at once, so no later exec takes it; and reported to at exit, so the parent never waits on
-		// an mldr that failed
-		if (fcntl(spawn_pipe, F_SETFD, FD_CLOEXEC) == -1)
-			spawn_pipe = -1;
-		else
+		// close-on-exec again at once, so no later exec takes it, and on the lowest free descriptor, clear of the high
+		// ones mldr takes for its sockets; reported to at exit, so the parent never waits on an mldr that failed
+		int fd = fcntl(spawn_pipe, F_DUPFD_CLOEXEC, 3);
+		close(spawn_pipe);
+		spawn_pipe = fd;
+		if (spawn_pipe >= 0)
 			atexit(spawn_pipe_fail);
 	} else {
 		spawn_pipe = -1;
