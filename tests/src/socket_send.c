@@ -8,8 +8,10 @@
 
 #include <arpa/inet.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <netinet/in.h>
 #include <poll.h>
+#include <pthread.h>
 #include <signal.h>
 #include <stdio.h>
 #include <string.h>
@@ -54,6 +56,25 @@ static int closed_for_sending(void)
 	shutdown(c, SHUT_WR);
 	close(s);
 	return c;
+}
+
+struct sender {
+	int fd;
+	long result;
+	int error;
+};
+
+static void* send_blocking_sigpipe(void* arg)
+{
+	struct sender* s = arg;
+	sigset_t set;
+
+	sigemptyset(&set);
+	sigaddset(&set, SIGPIPE);
+	pthread_sigmask(SIG_BLOCK, &set, NULL);
+	s->result = send(s->fd, "x", 1, 0);
+	s->error = errno;
+	return NULL;
 }
 
 static int nosigpipe(int fd)
@@ -120,6 +141,16 @@ int main(void)
 		check(nosigpipe(d) == 1, "a dup() of the descriptor has SO_NOSIGPIPE");
 		check(write(d, "x", 1) < 0 && errno == EPIPE && sigpipes == before, "and writes to it raise no SIGPIPE");
 		close(d);
+		d = fcntl(c, F_DUPFD, 0);
+		check(nosigpipe(d) == 1 && write(d, "x", 1) < 0 && sigpipes == before, "and an F_DUPFD copy");
+		int e = socket(AF_INET, SOCK_STREAM, 0);
+		check(dup2(c, e) == e && nosigpipe(e) == 1 && write(e, "x", 1) < 0 && sigpipes == before,
+		    "and a dup2() copy over another socket");
+		// a dup2() that fails replaces nothing (the flag of the descriptor it would have replaced was dropped)
+		check(dup2(-1, d) < 0 && errno == EBADF, "dup2() from a bad descriptor fails");
+		check(nosigpipe(d) == 1 && write(d, "x", 1) < 0 && sigpipes == before, "and the target keeps SO_NOSIGPIPE");
+		close(d);
+		close(e);
 
 		int zero = 0;
 		setsockopt(c, SOL_SOCKET, SO_NOSIGPIPE, &zero, sizeof(zero));
@@ -155,6 +186,21 @@ int main(void)
 		check(recv(c, &b, 1, 0) < 0 && errno == ECONNRESET, "recv() then fails with ECONNRESET");
 		check(recv(c, &b, 1, 0) == 0, "and then finds end of file");
 		close(c);
+	}
+
+	{
+		// XNU's sendit() raises SIGPIPE for the process (psignal()): a sending thread that blocks it doesn't stop
+		// another thread taking it (it was sent to the sending thread, where it stayed blocked)
+		struct sender sender = { closed_for_sending(), 0 };
+		pthread_t t;
+		before = sigpipes;
+		pthread_create(&t, NULL, send_blocking_sigpipe, &sender);
+		pthread_join(t, NULL);
+		for (int i = 0; i < 100 && sigpipes == before; i++)
+			usleep(10000);
+		check(sender.result < 0 && sender.error == EPIPE, "a thread blocking SIGPIPE gets EPIPE");
+		check(sigpipes == before + 1, "and the process takes the SIGPIPE in another thread");
+		close(sender.fd);
 	}
 
 	{

@@ -117,6 +117,9 @@ int main(void)
 	int n;
 	socklen_t nlen = sizeof(n);
 	check(getsockopt(p[0], SOL_SOCKET, SO_NREAD, &n, &nlen) < 0 && errno == ENOTSOCK, "SO_NREAD on a pipe fails with ENOTSOCK");
+	// XNU copies the length in and out: without one, EFAULT
+	errno = 0;
+	check(getsockopt(u, SOL_SOCKET, SO_NREAD, &n, NULL) < 0 && errno == EFAULT, "SO_NREAD without a length fails with EFAULT");
 	close(p[0]);
 	close(p[1]);
 	close(u);

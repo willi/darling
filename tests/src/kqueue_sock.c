@@ -42,6 +42,9 @@
 
 #define STATE_NOTES (NOTE_CONNRESET | NOTE_READCLOSED | NOTE_WRITECLOSED | NOTE_TIMEOUT | NOTE_CONNECTED | NOTE_DISCONNECTED)
 
+// more sockets than libsystem_kernel remembers at once (sostate.h's SOCKET_ENTRIES_MAX)
+#define SOCKETS_WITH_ERRORS 140
+
 static int failures;
 
 static void check(int ok, const char* what)
@@ -166,6 +169,49 @@ static void reset(int s)
 static void on_alarm(int sig)
 {
 	(void) sig;
+}
+
+// a blocking connection without a knote; -1 if setting it up failed
+static int tcp_pair(int lsn, const struct sockaddr_in* addr, int* server)
+{
+	int c = socket(AF_INET, SOCK_STREAM, 0);
+
+	if (connect(c, (const struct sockaddr*) addr, sizeof(*addr)) < 0)
+		return -1;
+	*server = accept(lsn, NULL, NULL);
+	return *server >= 0 ? c : -1;
+}
+
+// waits up to 2 seconds for poll() to report bits on fd
+static int poll_for(int fd, short bits)
+{
+	for (int i = 0; i < 200; i++) {
+		struct pollfd pfd = { fd, POLLIN, 0 };
+		if (poll(&pfd, 1, 10) > 0 && (pfd.revents & bits) == bits)
+			return 1;
+		usleep(10000);
+	}
+	return 0;
+}
+
+// a reset after the peer's FIN: c's connection is in CLOSE_WAIT, then reset; returns once c is closed (hung up)
+static int reset_after_fin(int c, int s)
+{
+	shutdown(s, SHUT_WR);
+	if (!poll_for(c, POLLIN))
+		return 0;
+	reset(s);
+	return poll_for(c, POLLHUP);
+}
+
+// a nonblocking connect to closed that was refused, once it was
+static int refused(const struct sockaddr_in* closed)
+{
+	int err, c = connecting(closed, &err);
+	struct pollfd pfd = { c, POLLOUT, 0 };
+
+	poll(&pfd, 1, 2000);
+	return c;
 }
 
 int main(void)
@@ -316,6 +362,47 @@ int main(void)
 	}
 
 	{
+		// the same reset, with nothing looking first: Linux's recv() returns end of file before the error (it
+		// returned 0 here), XNU's soreceive() the error
+		int s, c = tcp_pair(lsn, &addr, &s);
+		char b;
+		check(c >= 0 && reset_after_fin(c, s), "a reset after the peer's FIN, on a socket without a knote");
+		check(recv(c, &b, 1, 0) < 0 && errno == ECONNRESET, "recv() fails with ECONNRESET before end of file");
+		check(recv(c, &b, 1, 0) == 0 && so_error(c) == 0, "then finds end of file, the error taken");
+		close(c);
+	}
+
+	{
+		// and with a send first, on a watched socket: Linux's send() returns EPIPE and clears the error, as it
+		// does on a socket shut down for sending (the error was lost: recv() found end of file, the knote no reset)
+		int c, s;
+		char b;
+		check(connected_pair(lsn, &addr, kq, &c, &s) && reset_after_fin(c, s),
+		    "a reset after the peer's FIN, on a watched socket");
+		check(send(c, "x", 1, MSG_NOSIGNAL) < 0 && errno == EPIPE, "a send fails with EPIPE");
+		int got = next_with(kq, c, NOTE_CONNRESET, &ev);
+		check(got && (ev.flags & EV_EOF) && ev.data == ECONNRESET,
+		    "the knote still fires NOTE_CONNRESET with ECONNRESET");
+		check(recv(c, &b, 1, 0) < 0 && errno == ECONNRESET, "and recv() fails with ECONNRESET");
+		close(c);
+	}
+
+	{
+		// a send on a socket shut down for sending fails with EPIPE too, and that's no reset
+		int c, s;
+		char b;
+		check(connected_pair(lsn, &addr, kq, &c, &s), "set up a connection");
+		shutdown(c, SHUT_WR);
+		check(next_with(kq, c, NOTE_WRITECLOSED, &ev), "our shutdown(SHUT_WR) fires NOTE_WRITECLOSED");
+		close(s);
+		poll_for(c, POLLHUP);
+		check(send(c, "x", 1, MSG_NOSIGNAL) < 0 && errno == EPIPE, "a send after it fails with EPIPE");
+		check(!next_with(kq, c, NOTE_CONNRESET, &ev), "without NOTE_CONNRESET");
+		check(recv(c, &b, 1, 0) == 0, "and recv() finds end of file");
+		close(c);
+	}
+
+	{
 		// recv() takes the error before the knote looks: XNU posted NOTE_CONNRESET when the reset came
 		int c, s;
 		char b;
@@ -331,7 +418,7 @@ int main(void)
 
 	{
 		// EVFILT_READ on a reset socket reports the error at end of file (filt_soread), with an EVFILT_SOCK knote
-		// on the same socket or not
+		// on the same socket
 		int c, s;
 		check(connected_pair(lsn, &addr, kq, &c, &s), "set up a connection");
 		change(kq, c, EVFILT_READ, EV_ADD | EV_CLEAR, 0);
@@ -345,6 +432,87 @@ int main(void)
 		}
 		check(got && (ev.flags & EV_EOF) && ev.fflags == ECONNRESET, "EVFILT_READ's EV_EOF carries ECONNRESET");
 		close(c);
+	}
+
+	{
+		// and without one: EVFILT_READ alone takes the error from Linux, and leaves it for recv()
+		int s, c = tcp_pair(lsn, &addr, &s);
+		char b;
+		change(kq, c, EVFILT_READ, EV_ADD | EV_CLEAR, 0);
+		reset(s);
+		int got = 0;
+		for (int i = 0; i < 10 && !got; i++) {
+			struct timespec timeout = { 2, 0 };
+			if (kevent(kq, NULL, 0, &ev, 1, &timeout) != 1)
+				break;
+			got = ev.ident == (uintptr_t) c && ev.filter == EVFILT_READ;
+		}
+		check(got && (ev.flags & EV_EOF) && ev.fflags == ECONNRESET,
+		    "EVFILT_READ's EV_EOF carries ECONNRESET without an EVFILT_SOCK knote");
+		check(recv(c, &b, 1, 0) < 0 && errno == ECONNRESET, "and recv() still gets it");
+		close(c);
+	}
+
+	{
+		// a held error stays held however many sockets nobody watches have errors: they took table entries while
+		// any knote existed, and the oldest entry went, held error and all (a refused connect then looked successful)
+		int t = listener(&closed), others[SOCKETS_WITH_ERRORS], n = 0;
+		int watched = socket(AF_INET, SOCK_STREAM, 0);
+		char b;
+		close(t);
+		add(kq, watched, STATE_NOTES);
+		int h = refused(&closed);
+		check(send(h, "x", 1, MSG_NOSIGNAL) < 0 && errno == EPIPE, "a send on a refused socket fails with EPIPE");
+		for (; n < SOCKETS_WITH_ERRORS; n++) {
+			others[n] = refused(&closed);
+			recv(others[n], &b, 1, 0);
+		}
+		check(so_error(h) == ECONNREFUSED, "its error is still there after many other sockets' errors");
+		while (n > 0)
+			close(others[--n]);
+		close(h);
+		close(watched);
+	}
+
+	{
+		// a socket shut down for sending: Linux tells no one, unless it's TCP (XNU's soshutdown() posts
+		// SO_FILT_HINT_CANTSENDMORE whatever the protocol)
+		int sv[2];
+		socketpair(AF_UNIX, SOCK_STREAM, 0, sv);
+		check(add(kq, sv[0], STATE_NOTES) == 0 && next_with(kq, sv[0], NOTE_CONNECTED, &ev),
+		    "a socket pair's socket is connected");
+		shutdown(sv[0], SHUT_WR);
+		check(next_with(kq, sv[0], NOTE_WRITECLOSED, &ev), "an AF_UNIX shutdown(SHUT_WR) fires NOTE_WRITECLOSED");
+		close(sv[0]);
+		close(sv[1]);
+	}
+
+	{
+		// closing a kqueue drops its knotes, as XNU's kqueue_close() does: a knote kept its copy of the socket open,
+		// so closing the socket afterwards sent the peer no FIN
+		int other = kqueue(), s, c = tcp_pair(lsn, &addr, &s);
+		char b;
+		add(other, c, STATE_NOTES);
+		close(other);
+		close(c);
+		check(poll_for(s, POLLIN) && recv(s, &b, 1, MSG_DONTWAIT) == 0,
+		    "a socket closed after its kqueue closes the connection");
+		close(s);
+	}
+
+	{
+		// kevent() returns 0 only when its timeout has passed, though a knote it found had nothing to report: a
+		// regular file at end of file (it returned 0 at once)
+		FILE* f = tmpfile();
+		struct timespec t0, t1, wait = { 0, 300000000 };
+		change(kq, fileno(f), EVFILT_READ, EV_ADD, 0);
+		clock_gettime(CLOCK_MONOTONIC, &t0);
+		int n = kevent(kq, NULL, 0, &ev, 1, &wait);
+		clock_gettime(CLOCK_MONOTONIC, &t1);
+		long waited = (t1.tv_sec - t0.tv_sec) * 1000 + (t1.tv_nsec - t0.tv_nsec) / 1000000;
+		check(n == 0 && waited >= 250, "kevent() waits out its timeout on a file at end of file");
+		change(kq, fileno(f), EVFILT_READ, EV_DELETE, 0);
+		fclose(f);
 	}
 
 	{
@@ -364,17 +532,18 @@ int main(void)
 		connect(u, (struct sockaddr*) &to, sizeof(to));
 		check(next_with(kq, u, NOTE_CONNECTED, &ev), "a datagram socket's connect() fires NOTE_CONNECTED");
 
-		// its ICMP error stays the socket's: EVFILT_READ fires for it and recv() returns it, rather than blocking
+		// its ICMP error stays the socket's: EVFILT_READ fires for it and recv() returns it, rather than blocking.
+		// Both knotes look at the socket before recv() does, whichever kevent() returns first.
 		change(kq, u, EVFILT_READ, EV_ADD | EV_CLEAR, 0);
 		send(u, "x", 1, 0);
+		check(poll_for(u, POLLERR), "a datagram socket's ICMP error arrives");
 		int got = 0;
-		for (int i = 0; i < 10 && !got; i++) {
-			struct timespec timeout = { 2, 0 };
-			if (kevent(kq, NULL, 0, &ev, 1, &timeout) != 1)
-				break;
-			got = ev.ident == (uintptr_t) u && ev.filter == EVFILT_READ;
-		}
+		struct timespec drain = { 0, 300000000 };
+		while (kevent(kq, NULL, 0, &ev, 1, &drain) == 1)
+			got |= ev.ident == (uintptr_t) u && ev.filter == EVFILT_READ;
 		check(got, "EVFILT_READ fires for a datagram socket's error");
+		struct pollfd pfd = { u, POLLIN, 0 };
+		check(poll(&pfd, 1, 0) == 1 && (pfd.revents & POLLERR), "after the knotes looked, poll() still finds the error");
 		char b;
 		struct sigaction sa;
 		memset(&sa, 0, sizeof(sa));
