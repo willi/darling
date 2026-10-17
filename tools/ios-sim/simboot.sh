@@ -36,6 +36,13 @@ if launchctl list "$NAME" >/dev/null 2>&1; then
 	echo "$NAME is loaded but didn't finish booting; see $LOG. Run simshutdown.sh to try again." >&2
 	exit 1
 fi
+# launchctl skips a job plist that group or others can write ("Dubious permissions"), and the jobs below get this
+# shell's umask: a darling shell starts with launchd's, which an older darling took from whatever started the prefix
+if [ $(($(umask) & 022)) -ne $((022)) ]; then
+	echo "the umask is $(umask): launchctl skips job plists that group or others can write. Run simboot.sh with umask" \
+		"022; if a new darling shell has $(umask) too, shut the prefix down (darling shutdown) and start it again" >&2
+	exit 1
+fi
 
 mkdir -p "$D/tmp" "$D/Library/Logs" "$D/var/run/LaunchDaemons"
 rm -f "$D/var/run/LaunchDaemons/"*.plist
@@ -87,6 +94,9 @@ EOF
 		echo "<key>SIMULATOR_FRAMEBUFFER_FRAMEWORK</key><string>$(x "$SIM_FRAMEBUFFER_FRAMEWORK")</string>"
 	fi
 }
+
+# a device booted before keeps its job files, and with them their modes: they're written anew with this umask
+rm -f "$D/var/run/launchd_bootstrap.plist" "$JOB" "$SIM_IOKIT_JOB"
 
 # launchd_sim reads everything but the environments from inside the Bootstrap dictionary too: with Paths at the top
 # level, it loads no jobs
