@@ -63,6 +63,9 @@ static const void* __dserver_socket_address(void) {
 };
 
 extern void __mldr_close_rpc_socket(int socket);
+extern void __mldr_fork_prepare(void);
+extern void __mldr_fork_parent(void);
+extern void __mldr_fork_child(void);
 
 extern int __mldr_create_process_lifetime_pipe(int* fds);
 extern void __mldr_close_process_lifetime_pipe(int fd);
@@ -126,4 +129,8 @@ void elfcalls_make(struct elf_calls* calls)
 	calls->dserver_get_process_lifetime_pipe = __dserver_get_process_lifetime_pipe;
 	calls->dserver_process_lifetime_pipe_refresh = __dserver_process_lifetime_pipe_refresh;
 	calls->dserver_close_process_lifetime_pipe = __mldr_close_process_lifetime_pipe;
+
+	calls->fork_prepare = __mldr_fork_prepare;
+	calls->fork_parent = __mldr_fork_parent;
+	calls->fork_child = __mldr_fork_child;
 }

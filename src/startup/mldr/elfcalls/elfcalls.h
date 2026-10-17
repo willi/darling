@@ -71,6 +71,12 @@ struct elf_calls
 	int (*dserver_get_process_lifetime_pipe)(void);
 	int (*dserver_process_lifetime_pipe_refresh)(void);
 	void (*dserver_close_process_lifetime_pipe)(int fd);
+
+	// Around a fork, which is made with the raw syscall, so glibc's fork handlers don't run: mldr's locks are taken
+	// before it and released after it in both processes, so the child doesn't inherit one another thread held.
+	void (*fork_prepare)(void);
+	void (*fork_parent)(void);
+	void (*fork_child)(void);
 };
 
 #endif

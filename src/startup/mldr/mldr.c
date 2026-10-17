@@ -557,6 +557,8 @@ typedef struct socket_bitmap {
 	int highest;
 } socket_bitmap_t;
 
+#define SOCKET_BITMAP_MAX_BITS 65536
+
 static socket_bitmap_t socket_bitmap = {
 	.mutex = PTHREAD_MUTEX_INITIALIZER,
 	.next_index = 0,
@@ -584,27 +586,23 @@ static int socket_bitmap_get(socket_bitmap_t* bitmap) {
 			limit.rlim_cur = 1024;
 		}
 
+		// allocated whole, once: a fork child takes sockets from it too, and must not allocate (another thread of the
+		// parent may have held the allocator's lock at the fork); it covers the RPC sockets, at most one per thread,
+		// not the whole descriptor table
+		bitmap->bits = calloc(SOCKET_BITMAP_MAX_BITS / 8, 1);
+		if (!bitmap->bits) {
+			goto out;
+		}
+
 		bitmap->highest = limit.rlim_cur - 1;
 	}
 
 	if (bitmap->next_index >= bitmap->bit_length) {
 		// we need to grow the bitmap
-
-		if ((bitmap->bit_length % 8) == 0) {
-			// we need to allocate an additional byte
-
-			void* ptr = realloc(bitmap->bits, (bitmap->bit_length / 8) + 1);
-			if (!ptr) {
-				goto out;
-			}
-
-			bitmap->bits = ptr;
-
-			bitmap->bits[bitmap->bit_length / 8] = 0;
-		} else {
-			// we just need to increment the bit length
+		if (bitmap->bit_length >= SOCKET_BITMAP_MAX_BITS || bitmap->bit_length > (size_t) bitmap->highest) {
+			// every descriptor is in use
+			goto out;
 		}
-
 		++bitmap->bit_length;
 	}
 
@@ -758,6 +756,20 @@ err_out:
 void __mldr_close_rpc_socket(int socket) {
 	close(socket);
 	socket_bitmap_put(&socket_bitmap, socket);
+};
+
+// The fork child refreshes its RPC sockets through the socket bitmap: a fork while another thread held its lock
+// would leave the child waiting for that lock forever.
+void __mldr_fork_prepare(void) {
+	pthread_mutex_lock(&socket_bitmap.mutex);
+};
+
+void __mldr_fork_parent(void) {
+	pthread_mutex_unlock(&socket_bitmap.mutex);
+};
+
+void __mldr_fork_child(void) {
+	pthread_mutex_unlock(&socket_bitmap.mutex);
 };
 
 int __mldr_create_process_lifetime_pipe(int* fds) {

@@ -8,7 +8,9 @@
 # simshutdown.sh shuts the device down again.
 #
 # SIM_DAEMONS lists the runtime's LaunchDaemons the device loads (labels; default: cfprefsd, and logd with its
-# helper). launchd_sim starts each when a client first looks it up. The device's other variables are in simdevice.sh.
+# helper; "all": every one, as CoreSimulator loads them). launchd_sim starts each when a client first looks it up, or at
+# load if it says so. SIM_EXTRA_ENVIRONMENT adds NAME=VALUE pairs (space-separated) to the environment of the device's
+# launchd_sim and its jobs. The device's other variables are in simdevice.sh.
 set -eu
 : "${SIM_RUNTIME_ROOT:?set SIM_RUNTIME_ROOT to the RuntimeRoot of the runtime}"
 # shellcheck source=simdevice.sh
@@ -37,6 +39,9 @@ fi
 
 mkdir -p "$D/tmp" "$D/Library/Logs" "$D/var/run/LaunchDaemons"
 rm -f "$D/var/run/LaunchDaemons/"*.plist
+if [ "$SIM_DAEMONS" = all ]; then
+	SIM_DAEMONS=$(cd "$R/System/Library/LaunchDaemons" && for f in *.plist; do printf '%s ' "${f%.plist}"; done)
+fi
 for label in $SIM_DAEMONS; do
 	ln -s "$R/System/Library/LaunchDaemons/$label.plist" "$D/var/run/LaunchDaemons/"
 done
@@ -58,6 +63,7 @@ env_dict() {
 <key>SIMULATOR_DEVICE_NAME</key><string>$(x "$SIM_DEVICE_NAME")</string>
 <key>SIMULATOR_MODEL_IDENTIFIER</key><string>$(x "$SIM_MODEL_IDENTIFIER")</string>
 <key>SIMULATOR_PRODUCT_CLASS</key><string>$(x "$SIM_PRODUCT_CLASS")</string>
+<key>SIMULATOR_ARCHS</key><string>$(x "$SIM_ARCHS")</string>
 <key>SIMULATOR_SHARED_RESOURCES_DIRECTORY</key><string>$(x "$D")</string>
 <key>SIMULATOR_LOG_ROOT</key><string>$(x "$D/Library/Logs")</string>
 <key>SIMULATOR_HOST_HOME</key><string>$(x "$HOME")</string>
@@ -65,7 +71,21 @@ env_dict() {
 <key>CFFIXED_USER_HOME</key><string>$(x "$D")</string>
 <key>TMPDIR</key><string>$(x "$D/tmp/")</string>
 <key>XPC_SIMULATOR_LAUNCHD_NAME</key><string>$(x "$NAME")</string>
+<key>SIMULATOR_MAINSCREEN_WIDTH</key><string>$(x "$SIM_SCREEN_WIDTH")</string>
+<key>SIMULATOR_MAINSCREEN_HEIGHT</key><string>$(x "$SIM_SCREEN_HEIGHT")</string>
+<key>SIMULATOR_MAINSCREEN_SCALE</key><string>$(x "$SIM_SCREEN_SCALE")</string>
+<key>SIMULATOR_MAINSCREEN_PITCH</key><string>$(x "$SIM_SCREEN_PITCH")</string>
+<key>IOS_SIMULATOR_IOKITSIMD</key><string>1</string>
 EOF
+	for v in $SIM_EXTRA_ENVIRONMENT; do
+		echo "<key>$(x "${v%%=*}")</key><string>$(x "${v#*=}")</string>"
+	done
+	if [ -n "$SIM_DEVICE_TYPE" ]; then
+		echo "<key>SIMULATOR_CAPABILITIES</key><string>$(x "$SIM_DEVICE_TYPE/Contents/Resources/capabilities.plist")</string>"
+	fi
+	if [ -n "$SIM_FRAMEBUFFER_FRAMEWORK" ]; then
+		echo "<key>SIMULATOR_FRAMEBUFFER_FRAMEWORK</key><string>$(x "$SIM_FRAMEBUFFER_FRAMEWORK")</string>"
+	fi
 }
 
 # launchd_sim reads everything but the environments from inside the Bootstrap dictionary too: with Paths at the top
@@ -101,14 +121,35 @@ cat >"$JOB" <<EOF
 </dict></plist>
 EOF
 
-rm -f "$LOG"
-launchctl load "$JOB"
+# Darling has no kernel IOKit for the device's IOKit to talk to, as a Mac does: with IOS_SIMULATOR_IOKITSIMD set, the
+# device's IOKit looks up com.apple.iokitsimd instead, which simiokitd registers in the device once it is up
+cat >"$SIM_IOKIT_JOB" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>Label</key><string>$(x "$SIM_IOKIT_JOB_LABEL")</string>
+<key>ProgramArguments</key><array><string>/usr/libexec/ios-sim/simiokitd</string></array>
+<key>EnvironmentVariables</key><dict>
+<key>SIM_RUNTIME_ROOT</key><string>$(x "$R")</string>
+<key>SIM_UDID</key><string>$(x "$SIM_UDID")</string>
+</dict>
+<key>RunAtLoad</key><true/>
+<key>StandardErrorPath</key><string>$(x "$D/Library/Logs/simiokitd.log")</string>
+</dict></plist>
+EOF
 
+IOKIT_LOG="$D/Library/Logs/simiokitd.log"
+rm -f "$LOG" "$IOKIT_LOG"
+launchctl load "$JOB"
+launchctl load "$SIM_IOKIT_JOB"
+
+# booted once launchd_sim has left bootstrap mode and simiokitd has registered the device's IOKit in it (a daemon that
+# asks IOKit before then gets no answer)
 i=0
-until grep -qF "$SIM_DEVICE_BOOTED" "$LOG" 2>/dev/null; do
+until grep -qF "$SIM_DEVICE_BOOTED" "$LOG" 2>/dev/null && grep -qF "simiokitd: registered" "$IOKIT_LOG" 2>/dev/null; do
 	i=$((i + 1))
 	if [ "$i" -gt "$SIM_BOOT_TIMEOUT" ]; then
-		echo "$NAME didn't finish booting in ${SIM_BOOT_TIMEOUT}s; see $LOG and $D/Library/Logs/launchd_sim.log" >&2
+		echo "$NAME didn't finish booting in ${SIM_BOOT_TIMEOUT}s; see $LOG, $D/Library/Logs/launchd_sim.log and $IOKIT_LOG" >&2
 		echo "simshutdown.sh stops it" >&2
 		exit 1
 	fi
