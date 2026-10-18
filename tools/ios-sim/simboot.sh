@@ -13,6 +13,10 @@
 # launchd_sim and its jobs. SIM_UID and SIM_GID are the user and group the device runs as: launchd_sim, and every
 # process it starts (README.md). SIM_BOOT_TIMEOUT is how long to wait for the boot, in seconds (default: 60). The
 # device's other variables are in simdevice.sh.
+#
+# It exits 0 once the device is booted (simdevice.sh's sim_boot_state says booted), 75 when the wait ran out with
+# launchd_sim still in bootstrap mode (a slow host: a longer SIM_BOOT_TIMEOUT may do), and 1 for any other failure; the
+# last line it prints says what is missing.
 set -eu
 : "${SIM_RUNTIME_ROOT:?set SIM_RUNTIME_ROOT to the RuntimeRoot of the runtime}"
 # shellcheck source=simdevice.sh
@@ -196,26 +200,32 @@ while :; do
 	fi
 	if [ "$gone" -ge 2 ]; then
 		echo "$NAME didn't finish booting; see $LOG, $D/Library/Logs/launchd_sim.log and $SIM_IOKIT_LOG" >&2
+		echo "simshutdown.sh stops it" >&2
 		echo "launchd_sim is up, but simiokitd exited without registering the device's IOKit" \
 			"(simiokitd.log: ${SIM_IOKIT_LAST:-empty})" >&2
-		echo "simshutdown.sh stops it" >&2
 		exit 1
 	fi
 	if [ "$SIM_WAITED" -gt "$SIM_BOOT_TIMEOUT" ]; then
 		echo "$NAME didn't finish booting in ${SIM_BOOT_TIMEOUT}s; see $LOG, $D/Library/Logs/launchd_sim.log and $SIM_IOKIT_LOG" >&2
+		echo "simshutdown.sh stops it" >&2
+		# what is missing, last (callers print the last line)
 		case $SIM_BOOT_STATE in
-		bootstrap) echo "launchd_sim didn't leave bootstrap mode" >&2 ;;
+		bootstrap)
+			echo "launchd_sim didn't leave bootstrap mode" >&2
+			exit 75
+			;;
 		iokit-not-started)
-			loaded="not loaded"
-			launchctl list "$SIM_IOKIT_JOB_LABEL" >/dev/null 2>&1 && loaded=loaded
-			echo "launchd_sim is up, but launchd never started simiokitd ($SIM_IOKIT_JOB_LABEL is $loaded)" >&2
+			if launchctl list "$SIM_IOKIT_JOB_LABEL" >/dev/null 2>&1; then
+				echo "launchd_sim is up, but simiokitd's job is loaded and launchd never ran it" >&2
+			else
+				echo "launchd_sim is up, but simiokitd's job isn't loaded" >&2
+			fi
 			;;
 		*)
 			echo "launchd_sim is up, but simiokitd never registered the device's IOKit" \
 				"(simiokitd.log: ${SIM_IOKIT_LAST:-empty: still trying})" >&2
 			;;
 		esac
-		echo "simshutdown.sh stops it" >&2
 		exit 1
 	fi
 	sleep 1
