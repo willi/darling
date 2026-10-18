@@ -73,6 +73,12 @@ struct arg_struct
 
 static void* darling_thread_entry(void* p);
 
+#if defined(__GLIBC_PREREQ)
+#	if __GLIBC_PREREQ(2, 32)
+#		define HAVE_PTHREAD_ATTR_SETSIGMASK_NP 1
+#	endif
+#endif
+
 #ifndef PTHREAD_STACK_MIN
 #	define PTHREAD_STACK_MIN 16384
 #endif
@@ -204,9 +210,16 @@ void* __darling_thread_create(unsigned long stack_size, unsigned long pth_obj_si
 	// main thread, so the process's signals go to its other threads, a new one too. Signals sent meanwhile stay pending.
 	sigset_t all_signals;
 	sigfillset(&all_signals);
+#if HAVE_PTHREAD_ATTR_SETSIGMASK_NP
+	// glibc starts the thread with this mask, and leaves the creator's alone
+	pthread_sigmask(SIG_BLOCK, NULL, &args.sigmask);
+	pthread_attr_setsigmask_np(&attr, &all_signals);
+	int err = pthread_create(&nativeLibcThread, &attr, darling_thread_entry, &args);
+#else
 	pthread_sigmask(SIG_SETMASK, &all_signals, &args.sigmask);
 	int err = pthread_create(&nativeLibcThread, &attr, darling_thread_entry, &args);
 	pthread_sigmask(SIG_SETMASK, &args.sigmask, NULL);
+#endif
 	pthread_attr_destroy(&attr);
 
 	// no thread will clear args.pth: the caller fails the call (as XNU's bsdthread_create does)
