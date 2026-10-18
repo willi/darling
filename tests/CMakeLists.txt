@@ -49,5 +49,9 @@ darling_test(signal_flood)
 darling_test(thread_start_signals)
 darling_test(thread_create_fails)
 darling_test(fsgetpath)
+darling_test(dserver_bad_push)
+# it speaks darlingserver's protocol
+target_include_directories(dserver_bad_push PRIVATE ${CMAKE_BINARY_DIR}/src/external/darlingserver/include)
+add_dependencies(dserver_bad_push generate_dserver_rpc_wrappers)
 
 install(PROGRAMS run-all.sh DESTINATION libexec/darling/usr/libexec/darling-tests)
