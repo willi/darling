@@ -57,5 +57,6 @@ darling_test(dserver_bad_push)
 target_include_directories(dserver_bad_push PRIVATE ${CMAKE_BINARY_DIR}/src/external/darlingserver/include)
 add_dependencies(dserver_bad_push generate_dserver_rpc_wrappers)
 darling_test(spawn_signals)
+darling_test(kprintf_cost)
 
 install(PROGRAMS run-all.sh DESTINATION libexec/darling/usr/libexec/darling-tests)
