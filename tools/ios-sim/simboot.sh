@@ -13,7 +13,9 @@
 # launchd_sim and its jobs. They go into Child, which launchd_sim sets over each job's own variables: an extra HOME,
 # say, replaces an app's data container too. SIM_UID and SIM_GID are the user and group the device runs as:
 # launchd_sim, and every process it starts (README.md). SIM_BOOT_TIMEOUT is how long to wait for the boot, in seconds
-# (default: 60). The device's other variables are in simdevice.sh.
+# (default: 60). SIM_DYLD_SHARED_CACHE_DIR is the directory dyld_sim looks in for a cache after the runtime root's
+# (default: CoreSimulator's for the runtime and the host's build; empty: none). The device's other variables are in
+# simdevice.sh.
 #
 # It exits 0 once the device is booted (simdevice.sh's sim_boot_state says booted), 75 when the wait ran out with
 # launchd_sim still in bootstrap mode (a slow host: a longer SIM_BOOT_TIMEOUT may do), and 1 for any other failure; the
