@@ -4,6 +4,9 @@ add_definitions(-nostdinc)
 
 # Tests built with Darling's own toolchain and run inside the prefix, e.g. `darling shell /usr/libexec/darling-tests/workq_kevent`.
 # darling_test(NAME) builds src/NAME.c and installs it there; run-all.sh runs every test it finds.
+# They install as their own component, "tests", whichever component src/CMakeLists.txt set last: an image installing
+# components one by one (DESTDIR=... cmake -DCOMPONENT=tests -P cmake_install.cmake) can then take them.
+set(CMAKE_INSTALL_DEFAULT_COMPONENT_NAME "tests")
 function(darling_test name)
 	add_darling_executable(${name} src/${name}.c)
 	target_link_libraries(${name} system)
