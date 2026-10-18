@@ -81,8 +81,9 @@ x() {
 	printf '%s' "$1" | sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g'
 }
 
-# the environment CoreSimulator gives launchd_sim ("Self": all of it) and its jobs ("Child"). launchd_sim sets Child
-# over a job's own EnvironmentVariables
+# the environments CoreSimulator gives launchd_sim's jobs. "Child" is this one: launchd_sim sets it over a job's own
+# EnvironmentVariables. launchd_sim's own environment, "Self", is Child and the defaults below together (a Mac's Self
+# lacks one key of its Child's, VM_KERNEL_PAGE_SIZE_4K, which this Child doesn't set)
 env_child() {
 	cat <<EOF
 <key>DYLD_ROOT_PATH</key><string>$(x "$R")</string>
@@ -116,9 +117,9 @@ EOF
 	fi
 }
 
-# and its jobs' defaults ("ChildDefaults"), which a job's own EnvironmentVariables override. The home and temporary
-# directory are defaults in CoreSimulator's launchd_bootstrap.plist: an app's job keeps the data container's, which
-# RunningBoard gives it (from installd's record, through FrontBoard)
+# "ChildDefaults", the jobs' defaults: a job's own EnvironmentVariables override them. The home and temporary directory
+# are defaults in CoreSimulator's launchd_bootstrap.plist: an app's job keeps the data container's, which RunningBoard
+# gives it (from installd's record, through FrontBoard), and a job without its own (a daemon's) gets the device's data
 env_defaults() {
 	cat <<EOF
 <key>CFFIXED_USER_HOME</key><string>$(x "$D")</string>
