@@ -6,10 +6,13 @@
 //
 // The main thread starts THREADS short-lived threads one after another, with SIGUSR1 unblocked only while it does,
 // so that each new thread starts with it unblocked, as a Darling workqueue thread does (it takes its creator's mask;
-// XNU's starts with signals blocked). Meanwhile a child process signals
-// this one again as soon as the last signal has been handled (or after WAIT_MS without), so that one is nearly always
-// on its way. Each thread must start, the process must live, and the signals must be handled. It uses only XNU's
-// interface.
+// XNU's starts with signals blocked). Meanwhile a child process sends this one two signals each time the last ones
+// have been handled (or after WAIT_MS without): the main thread takes the first, and the second waits for a thread
+// that can take it, often one just started. Each thread must start, the process must live, and the signals must be
+// handled. It uses only XNU's interface.
+//
+// Whether a signal lands in a new thread's first instructions depends on scheduling, so a run without the fix fails
+// only nearly always: with the thread-start mask disabled, 5 of 5 runs died, each before its 70th thread.
 //
 // Prints one "ok"/"not ok" line per check; the exit status is the number of failed checks.
 
@@ -70,7 +73,9 @@ int main(void)
 		for (;;)
 		{
 			int before = atomic_load(handled);
-			if (kill(parent, SIGUSR1) != 0)
+			// the second waits while the main thread handles the first (in its handler, SIGUSR1 is blocked), for a
+			// thread that starts meanwhile
+			if (kill(parent, SIGUSR1) != 0 || kill(parent, SIGUSR1) != 0)
 				_exit(0);
 			for (int ms = 0; ms < WAIT_MS && atomic_load(handled) == before; ms++)
 				sleep_ms(1);
