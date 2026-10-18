@@ -67,6 +67,8 @@ struct arg_struct
 	uintptr_t stack_bottom;
 	uintptr_t stack_addr;
 	bool is_workqueue;
+	// the creating thread's signal mask, which the new thread takes once it has checked in
+	sigset_t sigmask;
 };
 
 static void* darling_thread_entry(void* p);
@@ -193,7 +195,15 @@ void* __darling_thread_create(unsigned long stack_size, unsigned long pth_obj_si
 	//pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
 
 	args.pth = pth;
+	// The new thread starts with every signal blocked, until it has checked in on its own RPC socket: before, a
+	// signal handler's calls (interrupt_enter first) would have no socket to go out on, which aborts the process, or
+	// darlingserver would register the thread before its checkin. A daemon in dispatch_main() blocks signals on its
+	// main thread, so the process's signals go to its other threads, a new one too. Signals sent meanwhile stay pending.
+	sigset_t all_signals;
+	sigfillset(&all_signals);
+	pthread_sigmask(SIG_SETMASK, &all_signals, &args.sigmask);
 	pthread_create(&nativeLibcThread, &attr, darling_thread_entry, &args);
+	pthread_sigmask(SIG_SETMASK, &args.sigmask, NULL);
 	pthread_attr_destroy(&attr);
 
 	while (args.pth != NULL)
@@ -243,6 +253,9 @@ static void* darling_thread_entry(void* p)
 	int thread_self_port = args.callbacks->thread_self_trap();
 	dthread->tsd[DTHREAD_TSD_SLOT_MACH_THREAD_SELF] = (void*)(intptr_t)thread_self_port;
 	args.port = thread_self_port;
+
+	// registered, on our own socket: a signal handler may run now
+	pthread_sigmask(SIG_SETMASK, &args.sigmask, NULL);
 
 	in_args->pth = NULL;
 
