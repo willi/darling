@@ -256,12 +256,28 @@ int main(void)
 
 	check(path_from_id(real) == 1, "a volume that isn't an overlay claims PATH_FROM_ID");
 
-	// the volume's root: object ID 2, as XNU's VFS_ROOT()
+	// object ID 2: the volume's root, as XNU's VFS_ROOT(), unless the Linux file system numbers another object 2 (tmpfs
+	// numbers its root 1, and its first object 2)
 	check(ids(real, &fsid, &fileid) == 0, "getattrlist() hands out the volume and file IDs");
-	check(finds(fsid, 2, fs.f_mntonname), "object ID 2 is the volume's root");
+	{
+		char got[PATH_MAX];
+		struct stat st, root_st;
+		ssize_t n = fsgetpath(got, sizeof(got), &fsid, 2);
+		int ok = n > 0 && lstat(got, &st) == 0 && lstat(fs.f_mntonname, &root_st) == 0 &&
+			(st.st_ino == 2 || (strcmp(got, fs.f_mntonname) == 0 && root_st.st_ino != 2));
+		if (!ok)
+			printf("# ID 2: %s (the volume's root: %s)\n", n > 0 ? got : strerror(errno), fs.f_mntonname);
+		check(ok, "object ID 2 is the object numbered 2, or else the volume's root (of its own mount)");
+	}
 
 	// a nested file this process never looked up: found by searching
 	check(ids_elsewhere(file, &fsid, &fileid) == 0 && finds(fsid, fileid, file), "a nested file, by searching");
+	// the fsid's second word only hints at the mount (binds of one file system share the first)
+	{
+		fsid_t first = fsid;
+		first.val[1] = 0;
+		check(finds(first, fileid, file), "the nested file, by the volume's first word alone");
+	}
 	// and once looked up: by that lookup
 	check(ids(file, &fsid, &fileid) == 0 && finds(fsid, fileid, file), "a nested file, after a lookup");
 
