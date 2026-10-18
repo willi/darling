@@ -4,8 +4,8 @@
 // compatibility mode.
 //
 // The objects are made on $FSGETPATH_TEST_DIR, or else on Linux's /root when it is a tmpfs (as in a taffy container;
-// otherwise the test skips them: a search of the host's root disk would read every directory on it). The prefix, an
-// overlay whose files report its layers' devices, must not claim PATH_FROM_ID.
+// otherwise the test skips them: a search of the host's root disk would read every directory on it). Every volume
+// that claims PATH_FROM_ID must find its objects by ID (which volumes do is the implementation's to say).
 //
 // With FSGETPATH_CONTRACT set, only what a program on $FSGETPATH_TEST_DIR's volume relies on: the volume claims
 // PATH_FROM_ID, and fsgetpath() finds a file there from IDs another process got, before and after a lookup and after
@@ -187,6 +187,20 @@ static int bulk_file(const char* dir, char* path, fsid_t* fsid, uint64_t* fileid
 	return found;
 }
 
+// whether fsgetpath() names the object path is (by any path: a mount's root may be named with or without a trailing /)
+static int same_object(fsid_t fsid, uint64_t fileid, const char* path)
+{
+	char got[PATH_MAX];
+	struct stat want, st;
+	ssize_t n = fsgetpath(got, sizeof(got), &fsid, fileid);
+	if (n < 0 || lstat(got, &st) != 0 || lstat(path, &want) != 0 || st.st_dev != want.st_dev || st.st_ino != want.st_ino)
+	{
+		printf("# fsgetpath: %s (want %s)\n", n < 0 ? strerror(errno) : got, path);
+		return 0;
+	}
+	return 1;
+}
+
 // CarbonCore's FSRef (FSPathMakeRef(), FSRefMakePath()), libsystem_kernel's: an 80-byte reference to an object
 extern int sys_name_to_handle(const char* name, void* ref, int follow);
 extern int sys_handle_to_name(void* ref, char name[4096]);
@@ -307,8 +321,27 @@ int main(void)
 	uint64_t fileid;
 	const char* contract = getenv("FSGETPATH_CONTRACT");
 
+	// the claim is honest: every volume that claims PATH_FROM_ID finds its objects by ID. Its root, by the IDs another
+	// process got: cheap on any volume, as a search looks at the root of each mount first
 	if (!contract)
-		check(path_from_id("/private/tmp") == 0, "the prefix, an overlay whose files report its layers' devices, doesn't claim PATH_FROM_ID");
+	{
+		static struct statfs vols[64];
+		int n = getfsstat(vols, sizeof(vols), MNT_NOWAIT), claim = 0, ok = n > 0;
+		for (int i = 0; i < n; i++)
+		{
+			if (path_from_id(vols[i].f_mntonname) != 1)
+				continue;
+			claim++;
+			if (ids_elsewhere(vols[i].f_mntonname, &fsid, &fileid) != 0 || !same_object(fsid, fileid, vols[i].f_mntonname))
+			{
+				printf("# %s (%s) claims PATH_FROM_ID, but its root isn't found by ID\n", vols[i].f_mntonname,
+					vols[i].f_fstypename);
+				ok = 0;
+			}
+		}
+		printf("# %d of %d volumes claim PATH_FROM_ID\n", claim, n);
+		check(ok, "every volume that claims PATH_FROM_ID finds its root by the IDs another process got");
+	}
 
 	// an overlay whose files report its own device (its layers on one file system, as Docker's): claims, and a file
 	// there is found by searching
