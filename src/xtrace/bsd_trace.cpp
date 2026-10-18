@@ -1061,7 +1061,7 @@ void darling_bsd_syscall_entry_print(int nr, void* args[])
 	nr = (int)((unsigned int)nr & 0xffff);
 #endif
 
-	handle_generic_entry(&log, bsd_defs, "bsd", nr, args);
+	handle_generic_entry(&log, bsd_defs, sizeof(bsd_defs) / sizeof(bsd_defs[0]), "bsd", nr, args);
 
 	if (nr == 1 || nr == 59)
 	{
@@ -1080,7 +1080,7 @@ extern "C"
 void darling_bsd_syscall_exit_print(uintptr_t retval)
 {
 	xtrace::String log;
-	handle_generic_exit(&log, bsd_defs, "bsd", retval, 0);
+	handle_generic_exit(&log, bsd_defs, sizeof(bsd_defs) / sizeof(bsd_defs[0]), "bsd", retval, 0);
 
 	if (log.size() > 0) {
 		xtrace_log("%s", log.c_str());

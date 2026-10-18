@@ -263,15 +263,21 @@ void xtrace_start_line(xtrace::String* log, int indent)
 	xtrace_reset_color(log);
 }
 
-static void print_call(xtrace::String* log, const struct calldef* defs, const char* type, int nr, int indent, int gray_name)
+// The call's entry in defs (count of them), or NULL: a number past the table is a call it doesn't know
+static const struct calldef* find_def(const struct calldef* defs, size_t count, int nr)
+{
+	return nr >= 0 && (size_t) nr < count && defs[nr].name != NULL ? &defs[nr] : NULL;
+}
+
+static void print_call(xtrace::String* log, const struct calldef* def, const char* type, int nr, int indent, int gray_name)
 {
 	xtrace_start_line(log, indent);
 
 	if (gray_name)
 		xtrace_set_gray_color(log);
 
-	if (defs[nr].name != NULL)
-		log->append_format("%s", defs[nr].name);
+	if (def != NULL)
+		log->append_format("%s", def->name);
 	else
 		log->append_format("%s %d", type, nr);
 
@@ -292,8 +298,10 @@ struct nested_call_struct {
 
 DEFINE_XTRACE_TLS_VAR(struct nested_call_struct, nested_call, (struct nested_call_struct) {0}, NULL);
 
-void handle_generic_entry(xtrace::String* log, const struct calldef* defs, const char* type, int nr, void* args[])
+void handle_generic_entry(xtrace::String* log, const struct calldef* defs, size_t count, const char* type, int nr, void* args[])
 {
+	const struct calldef* def = find_def(defs, count, nr);
+
 	if (xtrace_ignore)
 		return;
 
@@ -307,12 +315,12 @@ void handle_generic_entry(xtrace::String* log, const struct calldef* defs, const
 	int indent = 4 * get_ptr_nested_call()->current_level;
 	get_ptr_nested_call()->nrs[get_ptr_nested_call()->current_level] = nr;
 
-	print_call(log, defs, type, nr, indent, 0);
+	print_call(log, def, type, nr, indent, 0);
 
-	if (defs[nr].name != NULL && defs[nr].print_args != NULL)
+	if (def != NULL && def->print_args != NULL)
 	{
 		log->append("(");
-		defs[nr].print_args(log, nr, args);
+		def->print_args(log, nr, args);
 		log->append(")");
 	}
 	else
@@ -326,7 +334,7 @@ void handle_generic_entry(xtrace::String* log, const struct calldef* defs, const
 	get_ptr_nested_call()->previous_level = get_ptr_nested_call()->current_level++;
 }
 
-void handle_generic_exit(xtrace::String* log, const struct calldef* defs, const char* type, uintptr_t retval, int force_split)
+void handle_generic_exit(xtrace::String* log, const struct calldef* defs, size_t count, const char* type, uintptr_t retval, int force_split)
 {
 	if (xtrace_ignore)
 		return;
@@ -338,11 +346,12 @@ void handle_generic_exit(xtrace::String* log, const struct calldef* defs, const 
 	}
 	get_ptr_nested_call()->previous_level = get_ptr_nested_call()->current_level--;
 	int nr = get_ptr_nested_call()->nrs[get_ptr_nested_call()->current_level];
+	const struct calldef* def = find_def(defs, count, nr);
 
 	if (xtrace_split_entry_and_exit || force_split)
 	{
 		int indent = 4 * get_ptr_nested_call()->current_level;
-		print_call(log, defs, type, nr, indent, 1);
+		print_call(log, def, type, nr, indent, 1);
 		log->append("()");
 	}
 
@@ -350,8 +359,8 @@ void handle_generic_exit(xtrace::String* log, const struct calldef* defs, const 
 	log->append(" -> ");
 	xtrace_reset_color(log);
 
-	if (defs[nr].name != NULL && defs[nr].print_retval != NULL)
-		defs[nr].print_retval(log, nr, retval);
+	if (def != NULL && def->print_retval != NULL)
+		def->print_retval(log, nr, retval);
 	else
 		log->append_format("0x%lx", retval);
 

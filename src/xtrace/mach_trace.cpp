@@ -43,6 +43,7 @@ static void print_mach_msg_exit(xtrace::String* log);
 
 static const struct calldef mach_defs[128] = {
 	[10] = { "_kernelrpc_mach_vm_allocate_trap", NULL, print_kern_return },
+	[11] = { "_kernelrpc_mach_vm_purgable_control_trap", NULL, print_kern_return },
 	[12] = { "_kernelrpc_mach_vm_deallocate_trap", NULL, print_kern_return },
 	[14] = { "_kernelrpc_mach_vm_protect_trap", NULL, print_kern_return },
 	[15] = { "_kernelrpc_mach_vm_map_trap", NULL, print_kern_return },
@@ -217,7 +218,7 @@ void darling_mach_syscall_entry_print(int nr, void* args[])
 #endif
 
 	set_mach_call_nr(nr);
-	handle_generic_entry(&log, mach_defs, "mach", nr, args);
+	handle_generic_entry(&log, mach_defs, sizeof(mach_defs) / sizeof(mach_defs[0]), "mach", nr, args);
 	if (nr == 31 || nr == 32)
 		print_mach_msg_entry(&log, args);
 	
@@ -233,7 +234,7 @@ void darling_mach_syscall_exit_print(uintptr_t retval)
 	xtrace::String log;
 	int nr = get_mach_call_nr();
 	int is_msg = nr == 31 || nr == 32;
-	handle_generic_exit(&log, mach_defs, "mach", retval, is_msg);
+	handle_generic_exit(&log, mach_defs, sizeof(mach_defs) / sizeof(mach_defs[0]), "mach", retval, is_msg);
 	if (retval == KERN_SUCCESS && is_msg)
 		print_mach_msg_exit(&log);
 	set_mach_call_nr(-1);
