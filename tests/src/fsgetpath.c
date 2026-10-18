@@ -367,6 +367,13 @@ int main(void)
 	mkdir(sub, 0755);
 	snprintf(sub, sizeof(sub), "%s/a/b", real);
 	mkdir(sub, 0755);
+	// symlinks the search must not follow, beside a/b: a loop, and a second way into b. Made after b, as tmpfs lists a
+	// directory's newest entries first, so that the search meets them before b.
+	char loop[PATH_MAX], dirlink[PATH_MAX];
+	snprintf(loop, sizeof(loop), "%s/a/loop", real);
+	snprintf(dirlink, sizeof(dirlink), "%s/a/dirlink", real);
+	symlink(".", loop);
+	symlink("b", dirlink);
 	close(open(file, O_CREAT | O_WRONLY, 0644));
 
 	if (path_from_id(real) != 1)
@@ -389,6 +396,7 @@ int main(void)
 	}
 
 	// a nested file this process never looked up: found by searching
+	// (not by a/dirlink/file, nor through a/loop: finds() wants the path exactly)
 	check(ids_elsewhere(file, &fsid, &fileid) == 0 && finds(fsid, fileid, file), "a nested file, by searching");
 	// the fsid's second word only hints at the mount (binds of one file system share the first)
 	if (!contract)
@@ -488,6 +496,8 @@ int main(void)
 
 	unlink(moved);
 	unlink(link_);
+	unlink(loop);
+	unlink(dirlink);
 	rmdir(sub);
 	snprintf(sub, sizeof(sub), "%s/a", real);
 	rmdir(sub);
