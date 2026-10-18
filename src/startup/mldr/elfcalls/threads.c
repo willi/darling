@@ -73,6 +73,20 @@ struct arg_struct
 
 static void* darling_thread_entry(void* p);
 
+// Ends the process from a thread that can't run Darling's signal handlers yet: it has no socket of its own, or hasn't
+// checked in. glibc's abort() raises SIGABRT, whose handler (sigexc_handler) calls darlingserver first; on a thread
+// without a socket that aborted again, until the stack overflowed and the process died of SIGSEGV instead.
+static void __attribute__((noreturn)) abort_before_checkin(const char* why)
+{
+	char msg[160];
+	int len = snprintf(msg, sizeof(msg), "mldr: thread %ld %s\n", (long) syscall(SYS_gettid), why);
+
+	if (len > 0)
+		write(STDERR_FILENO, msg, (len < (int) sizeof(msg)) ? len : (int) sizeof(msg) - 1);
+	signal(SIGABRT, SIG_DFL);
+	abort();
+}
+
 #if defined(__GLIBC_PREREQ)
 #	if __GLIBC_PREREQ(2, 32)
 #		define HAVE_PTHREAD_ATTR_SETSIGMASK_NP 1
@@ -251,8 +265,7 @@ static void* darling_thread_entry(void* p)
 	int new_rpc_fd = __mldr_create_rpc_socket();
 	if (new_rpc_fd < 0) {
 		// we can't do anything if we don't get our own separate connection to darlingserver
-		fprintf(stderr, "Failed to create socket\n");
-		abort();
+		abort_before_checkin("couldn't create its darlingserver socket");
 	}
 
 	// guard the new RPC FD
@@ -272,7 +285,7 @@ static void* darling_thread_entry(void* p)
 	// the lifetime pipe fd is ignored as the process should already have been registered
 	if (dserver_rpc_explicit_checkin(t_server_socket, false, &dummy_stack_variable, -1) < 0) {
 		// we can't do ANYTHING if darlingserver doesn't acknowledge us successfully
-		abort();
+		abort_before_checkin("couldn't check in with darlingserver");
 	}
 
 	int thread_self_port = args.callbacks->thread_self_trap();
@@ -440,7 +453,7 @@ int __darling_thread_rpc_socket(void) {
 			t_server_socket = __dserver_main_thread_socket_fd;
 		} else {
 			// threads should already have a per-thread socket assigned when they're created
-			abort();
+			abort_before_checkin("called darlingserver before its checkin (from a signal handler?)");
 		}
 	}
 	return t_server_socket;
