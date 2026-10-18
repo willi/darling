@@ -5,7 +5,8 @@
 // until they stopped: starting a thread hung that way while another process signalled.
 //
 // First, a handled signal the thread sends itself must cost at most MAX_CALLS times a pair of Mach calls
-// (mach_thread_self() and mach_port_deallocate(), each a darlingserver call too), whatever the host's load. Then a
+// (mach_thread_self() and mach_port_deallocate(), each a darlingserver call too), whatever the host's load: the two
+// are timed in alternating batches, and each takes its fastest batch, since a stall only ever adds time. Then a
 // child signals this process every PERIOD_MS for FLOOD_MS. The main thread, the only one that takes the signal,
 // counts in a loop meanwhile; the longest time between two of its iterations must stay under MAX_GAP_MS. That
 // second check is what a program sees, but only on a loaded host does it fail without the fix. It uses only XNU's
@@ -17,6 +18,7 @@
 #include <signal.h>
 #include <stdatomic.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
@@ -24,7 +26,8 @@
 #define PERIOD_MS 20
 #define FLOOD_MS 4000
 #define MAX_GAP_MS 1000
-#define ROUNDS 200
+#define BATCHES 20
+#define ROUNDS 10
 // a signal is 4 calls (interrupt_enter, thread_self_trap, sigprocess, interrupt_exit) and raise()'s pthread_kill
 #define MAX_CALLS 10
 
@@ -34,6 +37,12 @@ static void on_signal(int sig)
 {
 	(void) sig;
 	atomic_fetch_add(&handled, 1);
+}
+
+static int compare(const void* a, const void* b)
+{
+	double x = *(const double*) a, y = *(const double*) b;
+	return (x > y) - (x < y);
 }
 
 static double now_ms(void)
@@ -48,21 +57,29 @@ int main(void)
 	struct sigaction sa = { .sa_handler = on_signal };
 	pid_t parent = getpid(), flooder;
 	int failed = 0, status;
+	double pairs[BATCHES], signals[BATCHES];
 
 	setvbuf(stdout, NULL, _IOLBF, 0);
 	sigaction(SIGUSR1, &sa, NULL);
 
-	double t0 = now_ms();
-	for (int i = 0; i < ROUNDS; i++)
-		mach_port_deallocate(mach_task_self(), mach_thread_self());
-	double calls = (now_ms() - t0) / ROUNDS;
-	t0 = now_ms();
-	for (int i = 0; i < ROUNDS; i++)
-		raise(SIGUSR1);
-	double signals = (now_ms() - t0) / ROUNDS;
+	for (int b = 0; b < BATCHES; b++)
+	{
+		double t0 = now_ms();
+		for (int i = 0; i < ROUNDS; i++)
+			mach_port_deallocate(mach_task_self(), mach_thread_self());
+		double t1 = now_ms();
+		for (int i = 0; i < ROUNDS; i++)
+			raise(SIGUSR1);
+		double t2 = now_ms();
+		pairs[b] = (t1 - t0) / ROUNDS;
+		signals[b] = (t2 - t1) / ROUNDS;
+	}
+	qsort(pairs, BATCHES, sizeof(double), compare);
+	qsort(signals, BATCHES, sizeof(double), compare);
+	double pair = pairs[0], signal = signals[0];
 	printf("%s - a handled signal costs %.1f times a Mach call pair (at most %d): %.3f ms vs %.3f ms\n",
-		signals <= MAX_CALLS * calls ? "ok" : "not ok", signals / calls, MAX_CALLS, signals, calls);
-	if (signals > MAX_CALLS * calls)
+		signal <= MAX_CALLS * pair ? "ok" : "not ok", signal / pair, MAX_CALLS, signal, pair);
+	if (signal > MAX_CALLS * pair)
 		failed++;
 	atomic_store(&handled, 0);
 
