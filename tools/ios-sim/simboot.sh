@@ -11,7 +11,8 @@
 # helper; "all": every one, as CoreSimulator loads them). launchd_sim starts each when a client first looks it up, or at
 # load if it says so. SIM_EXTRA_ENVIRONMENT adds NAME=VALUE pairs (space-separated) to the environment of the device's
 # launchd_sim and its jobs. SIM_UID and SIM_GID are the user and group the device runs as: launchd_sim, and every
-# process it starts (README.md). The device's other variables are in simdevice.sh.
+# process it starts (README.md). SIM_BOOT_TIMEOUT is how long to wait for the boot, in seconds (default: 60). The
+# device's other variables are in simdevice.sh.
 set -eu
 : "${SIM_RUNTIME_ROOT:?set SIM_RUNTIME_ROOT to the RuntimeRoot of the runtime}"
 # shellcheck source=simdevice.sh
@@ -178,17 +179,25 @@ launchctl load "$SIM_IOKIT_JOB"
 # asks IOKit before then gets no answer). The timeout is in seconds, not passes: each grep is a process start, which a
 # loaded host makes slow.
 end=$(($(date +%s) + SIM_BOOT_TIMEOUT))
-until grep -qF "$SIM_DEVICE_BOOTED" "$LOG" 2>/dev/null && grep -qF "simiokitd: registered" "$IOKIT_LOG" 2>/dev/null; do
-	if [ "$(date +%s)" -ge "$end" ]; then
+while :; do
+	# one look at each half, for the wait and for what a timeout says is missing
+	booted=0 registered=0
+	grep -qF "$SIM_DEVICE_BOOTED" "$LOG" 2>/dev/null && booted=1
+	grep -qF "simiokitd: registered" "$IOKIT_LOG" 2>/dev/null && registered=1
+	[ "$booted$registered" = 11 ] && break
+	if [ "$(date +%s)" -gt "$end" ]; then
 		echo "$NAME didn't finish booting in ${SIM_BOOT_TIMEOUT}s; see $LOG, $D/Library/Logs/launchd_sim.log and $IOKIT_LOG" >&2
-		# which half is missing (simiokitd's log is made when launchd starts it: it was removed above)
-		if ! grep -qF "$SIM_DEVICE_BOOTED" "$LOG" 2>/dev/null; then
+		if [ "$booted" = 0 ]; then
 			echo "launchd_sim didn't leave bootstrap mode" >&2
 		elif [ ! -e "$IOKIT_LOG" ]; then
-			echo "launchd_sim is up, but launchd never started simiokitd ($SIM_IOKIT_JOB_LABEL:" \
-				"$(launchctl list "$SIM_IOKIT_JOB_LABEL" 2>&1 | grep -o '"LastExitStatus" = [0-9-]*' || echo not loaded))" >&2
+			# launchd makes the log (removed above) when it starts simiokitd
+			loaded="not loaded"
+			launchctl list "$SIM_IOKIT_JOB_LABEL" >/dev/null 2>&1 && loaded=loaded
+			echo "launchd_sim is up, but launchd never started simiokitd ($SIM_IOKIT_JOB_LABEL is $loaded)" >&2
 		else
-			echo "launchd_sim is up, but simiokitd never registered the device's IOKit (simiokitd.log: $(tail -1 "$IOKIT_LOG"))" >&2
+			last=$(tail -1 "$IOKIT_LOG")
+			echo "launchd_sim is up, but simiokitd never registered the device's IOKit" \
+				"(simiokitd.log: ${last:-empty: still trying})" >&2
 		fi
 		echo "simshutdown.sh stops it" >&2
 		exit 1
