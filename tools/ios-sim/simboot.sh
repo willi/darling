@@ -86,7 +86,15 @@ x() {
 # System/Library/Caches/com.apple.dyld first, then from this directory, and with this set never from the prefix's
 # /System/Library/Caches (dyld's CacheFinder). Darling builds no cache here, so a device has one only if its runtime
 # root carries one
-: "${SIM_DYLD_SHARED_CACHE_DIR:=/Library/Developer/CoreSimulator/Caches/dyld/$(sw_vers -buildVersion)/$SIM_RUNTIME_IDENTIFIER.$SIM_RUNTIME_BUILD_VERSION/}"
+if [ -z "${SIM_DYLD_SHARED_CACHE_DIR:-}" ]; then
+	host_build=$(sw_vers -buildVersion) || host_build=
+	if [ -z "$host_build" ]; then
+		echo "sw_vers -buildVersion gave no build, which the device's dyld cache directory is named after" \
+			"(SIM_DYLD_SHARED_CACHE_DIR sets the directory)" >&2
+		exit 1
+	fi
+	SIM_DYLD_SHARED_CACHE_DIR=/Library/Developer/CoreSimulator/Caches/dyld/$host_build/$SIM_RUNTIME_IDENTIFIER.$SIM_RUNTIME_BUILD_VERSION/
+fi
 
 # the environments CoreSimulator gives launchd_sim's jobs. "Child" is this one: launchd_sim sets it over a job's own
 # EnvironmentVariables. launchd_sim's own environment, "Self", is Child and the defaults below together (a Mac's Self
