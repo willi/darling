@@ -77,8 +77,22 @@ static int ids(const char* path, fsid_t* fsid, uint64_t* fileid)
 	return 0;
 }
 
-// the same, looked up by another process: this one never looked the object up, so fsgetpath() has to search
-static int ids_elsewhere(const char* path, fsid_t* fsid, uint64_t* fileid)
+// the same, of an open file
+static int fd_ids(int fd, fsid_t* fsid, uint64_t* fileid)
+{
+	struct attrlist al = { .bitmapcount = ATTR_BIT_MAP_COUNT, .commonattr = ATTR_CMN_FSID | ATTR_CMN_FILEID };
+	struct id_buf b;
+
+	if (fgetattrlist(fd, &al, &b, sizeof(b), 0) != 0)
+		return -1;
+	*fsid = b.fsid;
+	*fileid = b.fileid;
+	return 0;
+}
+
+// the same, looked up by another process (by path, or with no path, by fd): this one never looked the object up, so
+// fsgetpath() has to search
+static int ids_elsewhere_of(const char* path, int fd, fsid_t* fsid, uint64_t* fileid)
 {
 	int fds[2];
 	struct id_buf b = { 0 };
@@ -91,7 +105,7 @@ static int ids_elsewhere(const char* path, fsid_t* fsid, uint64_t* fileid)
 		fsid_t f;
 		uint64_t id;
 		close(fds[0]);
-		b.length = ids(path, &f, &id) == 0;
+		b.length = (path ? ids(path, &f, &id) : fd_ids(fd, &f, &id)) == 0;
 		b.fsid = f;
 		b.fileid = id;
 		write(fds[1], &b, sizeof(b));
@@ -106,6 +120,11 @@ static int ids_elsewhere(const char* path, fsid_t* fsid, uint64_t* fileid)
 	*fsid = b.fsid;
 	*fileid = b.fileid;
 	return 0;
+}
+
+static int ids_elsewhere(const char* path, fsid_t* fsid, uint64_t* fileid)
+{
+	return ids_elsewhere_of(path, -1, fsid, fileid);
 }
 
 // whether fsgetpath() names path, and returns the length of what it wrote, its NUL counted
@@ -135,6 +154,60 @@ static int fails_with(ssize_t n, int err)
 		return 0;
 	}
 	return 1;
+}
+
+// The longest path fsgetpath()'s search builds: a Linux path of PATH_MAX - 1 bytes, in levels made relative to the
+// one above (a process can't name the path whole). Outside the prefix the process sees it 19 bytes longer, under
+// /Volumes/SystemRoot. want gets that path; levels[] the directories' descriptors, deepest last, then the file's.
+#define DEEP_LEVELS 32
+struct deep
+{
+	char want[PATH_MAX + 64], names[DEEP_LEVELS][256];
+	int fds[DEEP_LEVELS + 1], n;
+};
+
+static int make_deep(const char* real, struct deep* d)
+{
+	const char* exit_path = "/Volumes/SystemRoot";
+	if (strncmp(real, exit_path, strlen(exit_path)) != 0)
+		return -1;
+	int left = (PATH_MAX - 1) - (int) (strlen(real) - strlen(exit_path));
+	int at = open(real, O_RDONLY | O_DIRECTORY);
+	strcpy(d->want, real);
+	d->n = 0;
+	while (at >= 0 && left > 0 && d->n < DEEP_LEVELS)
+	{
+		// "/" and a name of up to 200 bytes; never a last level of just "/"
+		int len = left - 1 > 200 ? 200 : left - 1;
+		if (left - (1 + len) == 1)
+			len--;
+		memset(d->names[d->n], 'd', len);
+		d->names[d->n][len] = '\0';
+		strcat(d->want, "/");
+		strcat(d->want, d->names[d->n]);
+		left -= 1 + len;
+		int fd;
+		if (left == 0)
+			fd = openat(at, d->names[d->n], O_CREAT | O_WRONLY, 0644);
+		else if (mkdirat(at, d->names[d->n], 0755) == 0)
+			fd = openat(at, d->names[d->n], O_RDONLY | O_DIRECTORY);
+		else
+			fd = -1;
+		d->fds[d->n++] = at;
+		at = fd;
+	}
+	d->fds[d->n] = at;
+	return at >= 0 && left == 0 ? 0 : -1;
+}
+
+static void remove_deep(struct deep* d)
+{
+	for (int i = d->n - 1; i >= 0; i--)
+	{
+		close(d->fds[i + 1]);
+		unlinkat(d->fds[i], d->names[i], i == d->n - 1 ? 0 : AT_REMOVEDIR);
+	}
+	close(d->fds[0]);
 }
 
 int main(void)
@@ -185,6 +258,18 @@ int main(void)
 		check(ids_elsewhere(link_, &fsid, &fileid) == 0, "a hard link's IDs");
 		ssize_t n = fsgetpath(got, sizeof(got), &fsid, fileid);
 		check(n > 0 && (strcmp(got, moved) == 0 || strcmp(got, link_) == 0), "a hard link, by one of its names");
+	}
+
+	// the longest path the search builds, which the process sees longer still: an answer, or ENOSPC, and never more
+	// than the buffer (darling-xnu once wrote past its own, on the stack)
+	{
+		struct deep d;
+		char got[PATH_MAX];
+		check(make_deep(real, &d) == 0 && ids_elsewhere_of(0, d.fds[d.n], &fsid, &fileid) == 0,
+			"a file at the deepest path the search builds");
+		check(fails_with(fsgetpath(got, sizeof(got), &fsid, fileid), ENOSPC),
+			"a path longer than a page, as the process sees it: ENOSPC");
+		remove_deep(&d);
 	}
 
 	// errors, in XNU's order
