@@ -3,9 +3,9 @@
 // LaunchServices registered every app as a placeholder with no SDK version, and SpringBoard ran each in a 375x667
 // compatibility mode.
 //
-// The objects are made on a volume that isn't an overlay (fsgetpath() can't search an overlay, whose files are on its
-// layers' devices): $FSGETPATH_TEST_DIR, or Linux's /root, a tmpfs in a taffy container. The prefix itself is an
-// overlay, which must not claim PATH_FROM_ID.
+// The objects are made on $FSGETPATH_TEST_DIR, or else on Linux's /root when it is a tmpfs (as in a taffy container;
+// otherwise the test skips them: a search of the host's root disk would read every directory on it). The prefix, an
+// overlay whose files report its layers' devices, must not claim PATH_FROM_ID.
 //
 // Prints one "ok"/"not ok" line per check, then "# N failed" (a run without that line crashed); the exit status is the
 // number of failed checks.
@@ -280,6 +280,15 @@ int main(void)
 		if (path_from_id("/usr/lib/system") == 0)
 			check(bulk_file("/usr/lib/system", path, &fsid, &fileid) == 0 && finds(fsid, fileid, path),
 				"a file getattrlistbulk() listed, on a volume no search finds it on");
+	}
+
+	// a search of the default directory's volume must be cheap: Linux's /root a tmpfs, as in a taffy container, not the
+	// host's root file system under a plain Darling (whose search would read every directory on the disk)
+	if (!getenv("FSGETPATH_TEST_DIR") && (statfs(base, &fs) != 0 || strcmp(fs.f_fstypename, "tmpfs") != 0))
+	{
+		printf("ok - # SKIP %s isn't a tmpfs: set FSGETPATH_TEST_DIR to a directory on a small volume\n", base);
+		printf("# %d failed\n", failures);
+		return failures;
 	}
 
 	snprintf(dir, sizeof(dir), "%s/fsgetpath.XXXXXX", base);
