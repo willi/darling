@@ -58,3 +58,33 @@ SIM_DEVICE_BOOTED='(system) <Notice>: exiting bootstrap mode'
 # the job serving the device's IOKit (simiokitd)
 SIM_IOKIT_JOB_LABEL="$SIM_DEVICE_JOB_LABEL.iokit"
 SIM_IOKIT_JOB="$SIM_DEVICE_DATA/var/run/$SIM_IOKIT_JOB_LABEL.plist"
+# simiokitd's log, which launchd makes when it starts simiokitd, and its line once it has registered the device's IOKit
+SIM_IOKIT_LOG="$SIM_DEVICE_DATA/Library/Logs/simiokitd.log"
+SIM_IOKIT_REGISTERED='simiokitd: registered'
+
+# sim_boot_state: how far the device has booted, from one look at each log, as a word in SIM_BOOT_STATE:
+# - booted: launchd_sim has left bootstrap mode, and simiokitd has registered the device's IOKit in it;
+# - bootstrap: launchd_sim hasn't left bootstrap mode;
+# - iokit-not-started: launchd hasn't started simiokitd;
+# - iokit-unregistered: simiokitd hasn't registered; SIM_IOKIT_LAST is its log's last line (empty: none yet).
+# Whether the device's job is loaded at all is launchctl's to say. It sets variables, rather than printing, so a wait
+# can call it without a subshell.
+sim_boot_state() {
+	SIM_IOKIT_LAST=
+	if ! grep -qF "$SIM_DEVICE_BOOTED" "$SIM_DEVICE_LOG" 2>/dev/null; then
+		SIM_BOOT_STATE=bootstrap
+	elif [ ! -e "$SIM_IOKIT_LOG" ]; then
+		SIM_BOOT_STATE=iokit-not-started
+	else
+		sim_iokit=$(cat "$SIM_IOKIT_LOG" 2>/dev/null) || sim_iokit=
+		case $sim_iokit in
+		*"$SIM_IOKIT_REGISTERED"*) SIM_BOOT_STATE=booted ;;
+		*)
+			SIM_BOOT_STATE=iokit-unregistered
+			SIM_IOKIT_LAST=${sim_iokit##*"
+"}
+			;;
+		esac
+		unset sim_iokit
+	fi
+}

@@ -312,7 +312,7 @@ static int register_endpoint(mach_port_t port)
 		err = register_endpoint(name, SERVICE_NAME, port);
 		if (err == 0)
 		{
-			// simboot.sh waits for this line before it calls the device booted
+			// simdevice.sh's SIM_IOKIT_REGISTERED: simboot.sh waits for this line before it calls the device booted
 			fprintf(stderr, "simiokitd: registered %s in %s\n", SERVICE_NAME, name);
 			return 0;
 		}
