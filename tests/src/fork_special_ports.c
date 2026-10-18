@@ -10,13 +10,15 @@
 //
 // The test forks FORKS children the way launchd does, each sending a message through the bootstrap port it got,
 // after a child that starts threads (what used to unbalance the parent's waits). Then children stop themselves before
-// their checkin (__DARLING_FORK_STOP_CHILD), which keeps fork() waiting, and another thread signals the forking thread
-// and kills the child (an interrupted wait used to return early, and a dead child's fork() to wait for ever), or
-// signals the child and lets it go on (its handler used to run on its parent's RPC socket, and crash darlingserver).
-// A watchdog turns a hang into a failure. Apart from that variable it uses only XNU's interface.
+// their checkin (Darling's libsystem_kernel has a switch for it, __darling_fork_stop_child), which keeps fork()
+// waiting. Another thread either signals the forking thread and kills the child (an interrupted wait used to return
+// early, and a dead child's fork() to wait for ever), or signals the child and lets it go on (its handler used to run
+// on its parent's RPC socket, and crash darlingserver). A watchdog turns a hang into a failure. Apart from that switch
+// it uses only XNU's interface.
 //
 // Prints one "ok"/"not ok" line per check; the exit status is the number of failed checks.
 
+#include <dlfcn.h>
 #include <errno.h>
 #include <mach/mach.h>
 #include <pthread.h>
@@ -201,8 +203,12 @@ static void sleep_ms(long ms)
 
 enum how { SIGNAL_PARENT, SIGNAL_CHILD };
 
+// a signalled child's exit statuses when its handler didn't run, or its signal mask isn't its parent's
+#define CHILD_NOT_HANDLED 5
+#define CHILD_MASK_CHANGED 6
+
 static pthread_t forker;
-static atomic_int in_fork, forks_started, forks_handled, signals_handled, child_stopped, still_in_fork;
+static atomic_int forks_started, forks_handled, signals_handled, child_stopped, parent_signals, kill_sent;
 static _Atomic enum how how;
 
 static void on_signal(int sig)
@@ -211,7 +217,7 @@ static void on_signal(int sig)
 	atomic_fetch_add(&signals_handled, 1);
 }
 
-// For each fork, waits for the child to stop itself before its checkin (__DARLING_FORK_STOP_CHILD). SIGNAL_PARENT:
+// For each fork, waits for the child to stop itself before its checkin (__darling_fork_stop_child). SIGNAL_PARENT:
 // signals the forking thread SIGNALS times, sees whether fork() still waits, and kills the child. SIGNAL_CHILD:
 // signals the child and lets it go on.
 static void* stopper(void* arg)
@@ -223,30 +229,38 @@ static void* stopper(void* arg)
 		while (atomic_load(&forks_started) == handled)
 			sched_yield();
 
+		// only a stop: a child that exited stays for its parent's waitpid()
 		pid_t child = 0;
-		int status;
-		for (int ms = 0; ms < 5000 && child <= 0; ms++)
-			if ((child = waitpid(-1, &status, WNOHANG | WUNTRACED)) <= 0 || !WIFSTOPPED(status))
-			{
-				child = 0;
+		for (int ms = 0; ms < 5000 && child == 0; ms++)
+		{
+			siginfo_t info;
+			memset(&info, 0, sizeof(info));
+			if (waitid(P_ALL, 0, &info, WSTOPPED | WNOHANG) == 0 && info.si_pid > 0 && info.si_code == CLD_STOPPED)
+				child = info.si_pid;
+			else
 				sleep_ms(1);
-			}
+		}
 
 		if (child > 0)
 		{
 			atomic_store(&child_stopped, 1);
 			if (atomic_load(&how) == SIGNAL_PARENT)
 			{
+				// each one handled by the forking thread, during its fork()
+				int taken = 0;
 				for (int i = 0; i < SIGNALS; i++)
 				{
 					int before = atomic_load(&signals_handled);
 					if (pthread_kill(forker, SIGUSR1) != 0)
 						break;
-					for (int ms = 0; ms < 1000 && atomic_load(&signals_handled) == before; ms++)
+					for (int ms = 0; ms < 5000 && atomic_load(&signals_handled) == before; ms++)
 						sleep_ms(1);
+					if (atomic_load(&signals_handled) != before)
+						taken++;
 				}
-				sleep_ms(50);
-				atomic_store(&still_in_fork, atomic_load(&in_fork));
+				atomic_store(&parent_signals, taken);
+				// a fork() that returns before this returned early
+				atomic_store(&kill_sent, 1);
 				kill(child, SIGKILL);
 			}
 			else
@@ -264,15 +278,20 @@ static void* stopper(void* arg)
 static int fork_stopped_children(mach_port_t port)
 {
 	mach_port_t self = mach_task_self();
-	int not_stopped = 0, returned = 0, not_killed = 0, lost = 0;
+	int not_stopped = 0, returned = 0, unsignalled = 0, not_killed = 0, lost = 0, lost_status = 0;
+	int* stop_child = dlsym(RTLD_DEFAULT, "__darling_fork_stop_child");
 	struct sigaction sa;
 	pthread_t thread;
 
+	if (stop_child == NULL)
+	{
+		printf("not ok - stopped children: libsystem_kernel has no __darling_fork_stop_child\n");
+		return 1;
+	}
 	memset(&sa, 0, sizeof(sa));
 	sa.sa_handler = on_signal;
 	forker = pthread_self();
-	if (sigaction(SIGUSR1, &sa, NULL) != 0 || pthread_create(&thread, NULL, stopper, NULL) != 0
-		|| setenv("__DARLING_FORK_STOP_CHILD", "1", 1) != 0)
+	if (sigaction(SIGUSR1, &sa, NULL) != 0 || pthread_create(&thread, NULL, stopper, NULL) != 0)
 	{
 		printf("not ok - stopped children: set up\n");
 		return 1;
@@ -283,18 +302,36 @@ static int fork_stopped_children(mach_port_t port)
 		enum how kind = (i % 2 == 0) ? SIGNAL_PARENT : SIGNAL_CHILD;
 		atomic_store(&how, kind);
 		atomic_store(&child_stopped, 0);
-		atomic_store(&still_in_fork, 0);
+		atomic_store(&parent_signals, 0);
+		atomic_store(&kill_sent, 0);
 		if (task_set_special_port(self, TASK_BOOTSTRAP_PORT, port) != KERN_SUCCESS)
 		{
 			printf("not ok - stopped children: set the bootstrap port\n");
 			return 1;
 		}
-		atomic_store(&in_fork, 1);
+		sigset_t mask;
+		pthread_sigmask(SIG_SETMASK, NULL, &mask);
+		int handled = atomic_load(&signals_handled);
 		atomic_fetch_add(&forks_started, 1);
+		*stop_child = 1;
 		pid_t pid = fork();
+		*stop_child = 0;
 		if (pid == 0)
+		{
+			// The stopper's signal was pending when this fork() unblocked the child's signals: the handler has run,
+			// and the mask is its parent's again.
+			if (kind == SIGNAL_CHILD)
+			{
+				sigset_t now;
+				pthread_sigmask(SIG_SETMASK, NULL, &now);
+				if (atomic_load(&signals_handled) == handled)
+					_exit(CHILD_NOT_HANDLED);
+				if (memcmp(&now, &mask, sizeof(now)) != 0)
+					_exit(CHILD_MASK_CHANGED);
+			}
 			child_ping(PING_ID + i);
-		atomic_store(&in_fork, 0);
+		}
+		int early = !atomic_load(&kill_sent);
 		kern_return_t kr = task_set_special_port(self, TASK_BOOTSTRAP_PORT, MACH_PORT_NULL);
 		if (pid < 0 || kr != KERN_SUCCESS)
 		{
@@ -319,23 +356,36 @@ static int fork_stopped_children(mach_port_t port)
 		else if (kind == SIGNAL_PARENT)
 		{
 			// a signal must not end the wait: the parent would reset its port before the child got it
-			if (!atomic_load(&still_in_fork))
+			if (early)
 				returned++;
+			if (atomic_load(&parent_signals) != SIGNALS)
+				unsignalled++;
 			if (!WIFSIGNALED(status) || WTERMSIG(status) != SIGKILL)
 				not_killed++;
 		}
 		// it got the port it was forked with, and its signal didn't disturb its parent's fork()
 		else if (!WIFEXITED(status) || WEXITSTATUS(status) != 0 || !pinged)
-			lost++;
+		{
+			if (lost++ == 0)
+				lost_status = status;
+		}
 		atomic_fetch_add(&progress, 1);
 	}
-	unsetenv("__DARLING_FORK_STOP_CHILD");
 
 	int failed = 0;
 	if (not_stopped)
 	{
-		printf("not ok - children stop before their checkin (__DARLING_FORK_STOP_CHILD): %d of %d didn't\n",
+		printf("not ok - children stop before their checkin (__darling_fork_stop_child): %d of %d didn't\n",
 			not_stopped, 2 * STOPS);
+		failed++;
+	}
+	// else a fork() that returns at a signal could pass
+	if (unsignalled == 0)
+		printf("ok - the forking thread takes %d signals while its fork() waits\n", SIGNALS);
+	else
+	{
+		printf("not ok - the forking thread takes %d signals while its fork() waits: it didn't, for %d of %d\n",
+			SIGNALS, unsignalled, STOPS);
 		failed++;
 	}
 	if (returned == 0)
@@ -358,8 +408,8 @@ static int fork_stopped_children(mach_port_t port)
 		printf("ok - a child signalled before its checkin reaches the bootstrap port it was forked with\n");
 	else
 	{
-		printf("not ok - a child signalled before its checkin: %d of %d didn't reach the bootstrap port it was forked "
-			"with\n", lost, STOPS);
+		printf("not ok - a child signalled before its checkin: %d of %d didn't take the signal and reach the bootstrap "
+			"port it was forked with (first: wait status 0x%x)\n", lost, STOPS, lost_status);
 		failed++;
 	}
 	return failed;
