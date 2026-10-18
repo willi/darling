@@ -57,7 +57,10 @@ trampoline through `simasuid`, which sets the groups (to just the gid), the gid 
 runtime takes other paths as root: libAccessibility, for one, asks backboardd over IPC for each preference when
 `geteuid()` is 0, and backboardd, which serves that IPC, then waits on itself. `SIM_UID=0 SIM_GID=0` keep the old
 behaviour, for debugging. Whatever else talks to the device (a per-user launchd domain, `user/<uid>`) should use the
-same `SIM_UID`. Darling keeps the ids in darlingserver, and they don't reach everywhere:
+same `SIM_UID`. `launchd_sim` takes a request from a host client (`launch_sim_spawn`, `launch_sim_register_endpoint`)
+only when the caller's euid is its own uid, root included, as CoreSimulator's clients run as the same Mac user as the
+device: so `simboot.sh` starts `simiokitd` through `simasuid` too, and `simspawn` must run as the device's user,
+`simasuid $SIM_UID $SIM_GID simspawn <program>` (as root against a device at 501 it gets `Operation not permitted`). Darling keeps the ids in darlingserver, and they don't reach everywhere:
 - `stat()` reports every file as owned by the caller, so a device at 501 sees its root-owned data as its own;
 - `proc_pidinfo()`/sysctl report the caller's uid for every process;
 - `setuid()` needs no privilege: a process at 501 can become root again (a job whose plist says `UserName root`

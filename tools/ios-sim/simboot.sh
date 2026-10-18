@@ -152,13 +152,14 @@ cat >"$JOB" <<EOF
 EOF
 
 # Darling has no kernel IOKit for the device's IOKit to talk to, as a Mac does: with IOS_SIMULATOR_IOKITSIMD set, the
-# device's IOKit looks up com.apple.iokitsimd instead, which simiokitd registers in the device once it is up
+# device's IOKit looks up com.apple.iokitsimd instead, which simiokitd registers in the device once it is up.
+# launchd_sim takes a host client's request only from its own user (README.md), so simiokitd runs as the device does.
 cat >"$SIM_IOKIT_JOB" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
 <key>Label</key><string>$(x "$SIM_IOKIT_JOB_LABEL")</string>
-<key>ProgramArguments</key><array><string>/usr/libexec/ios-sim/simiokitd</string></array>
+<key>ProgramArguments</key><array>$as_user<string>/usr/libexec/ios-sim/simiokitd</string></array>
 <key>EnvironmentVariables</key><dict>
 <key>SIM_RUNTIME_ROOT</key><string>$(x "$R")</string>
 <key>SIM_UDID</key><string>$(x "$SIM_UDID")</string>
