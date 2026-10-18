@@ -62,7 +62,7 @@ and `DYLD_FALLBACK_LIBRARY_PATH` (the runtime's `System/Library/Frameworks` and 
 `/Library/Developer/CoreSimulator/Caches/dyld/<sw_vers -buildVersion>/<SIM_RUNTIME_IDENTIFIER>.<build>/`. dyld_sim
 takes a cache from the runtime root's own `System/Library/Caches/com.apple.dyld` first, then from that directory, and
 with it set never from the prefix's `/System/Library/Caches`. Darling builds no cache there, so a device runs without
-one unless its runtime root carries one.
+one unless its runtime root carries one. `SIM_DYLD_SHARED_CACHE_DIR=` (set, empty) leaves the variable out.
 `simboot.sh` needs umask 022 (or one that also keeps group and others from writing): `launchctl` skips job plists that
 group or others can write. A `darling shell` has `launchd`'s umask, which `darling` starts with at least 022.
 `launchd_sim` logs to `/private/var/tmp/com.apple.CoreSimulator.SimDevice.<udid>/launchd.log`.

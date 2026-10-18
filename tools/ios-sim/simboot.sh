@@ -85,8 +85,9 @@ x() {
 # build (sw_vers's; Darling's is "Darling"). dyld_sim takes a cache from the runtime root's own
 # System/Library/Caches/com.apple.dyld first, then from this directory, and with this set never from the prefix's
 # /System/Library/Caches (dyld's CacheFinder). Darling builds no cache here, so a device has one only if its runtime
-# root carries one
-if [ -z "${SIM_DYLD_SHARED_CACHE_DIR:-}" ]; then
+# root carries one. SIM_DYLD_SHARED_CACHE_DIR set and empty leaves the variable out, so dyld_sim looks in the prefix's
+# /System/Library/Caches after the runtime root's
+if [ -z "${SIM_DYLD_SHARED_CACHE_DIR+set}" ]; then
 	host_build=$(sw_vers -buildVersion) || host_build=
 	if [ -z "$host_build" ]; then
 		echo "sw_vers -buildVersion gave no build, which the device's dyld cache directory is named after" \
@@ -102,7 +103,6 @@ fi
 env_child() {
 	cat <<EOF
 <key>DYLD_ROOT_PATH</key><string>$(x "$R")</string>
-<key>DYLD_SHARED_CACHE_DIR</key><string>$(x "$SIM_DYLD_SHARED_CACHE_DIR")</string>
 <key>PATH</key><string>$(x "$R/usr/bin:$R/bin:$R/usr/sbin:$R/sbin:$R/usr/local/bin")</string>
 <key>SIMULATOR_ROOT</key><string>$(x "$R")</string>
 <key>IPHONE_SIMULATOR_ROOT</key><string>$(x "$R")</string>
@@ -126,6 +126,9 @@ EOF
 	for v in $SIM_EXTRA_ENVIRONMENT; do
 		echo "<key>$(x "${v%%=*}")</key><string>$(x "${v#*=}")</string>"
 	done
+	if [ -n "$SIM_DYLD_SHARED_CACHE_DIR" ]; then
+		echo "<key>DYLD_SHARED_CACHE_DIR</key><string>$(x "$SIM_DYLD_SHARED_CACHE_DIR")</string>"
+	fi
 	if [ -n "$SIM_DEVICE_TYPE" ]; then
 		echo "<key>SIMULATOR_CAPABILITIES</key><string>$(x "$SIM_DEVICE_TYPE/Contents/Resources/capabilities.plist")</string>"
 	fi
