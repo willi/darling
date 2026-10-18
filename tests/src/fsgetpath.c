@@ -7,6 +7,10 @@
 // otherwise the test skips them: a search of the host's root disk would read every directory on it). The prefix, an
 // overlay whose files report its layers' devices, must not claim PATH_FROM_ID.
 //
+// With FSGETPATH_CONTRACT set, only what a program on $FSGETPATH_TEST_DIR's volume relies on: the volume claims
+// PATH_FROM_ID, and fsgetpath() finds a file there from IDs another process got, before and after a lookup and after
+// a move. Not XNU's errors and limits, nor what other volumes claim: Darling keeps those.
+//
 // Prints one "ok"/"not ok" line per check, then "# N failed" (a run without that line crashed); the exit status is the
 // number of failed checks.
 
@@ -254,11 +258,14 @@ int main(void)
 	struct statfs fs;
 	fsid_t fsid;
 	uint64_t fileid;
+	const char* contract = getenv("FSGETPATH_CONTRACT");
 
-	check(path_from_id("/private/tmp") == 0, "the prefix, an overlay whose files report its layers' devices, doesn't claim PATH_FROM_ID");
+	if (!contract)
+		check(path_from_id("/private/tmp") == 0, "the prefix, an overlay whose files report its layers' devices, doesn't claim PATH_FROM_ID");
 
 	// an overlay whose files report its own device (its layers on one file system, as Docker's): claims, and a file
 	// there is found by searching
+	if (!contract)
 	{
 		struct stat dir_st, file_st;
 		const char* d = "/Volumes/SystemRoot/etc", *f = "/Volumes/SystemRoot/etc/passwd";
@@ -275,6 +282,7 @@ int main(void)
 
 	// getattrlistbulk() hands out IDs (CFURL's enumerators, LaunchServices' bundle scans), which fsgetpath() then finds:
 	// for a file of the prefix's lower layer, whose device no mount is of, only by that
+	if (!contract)
 	{
 		char path[PATH_MAX];
 		if (path_from_id("/usr/lib/system") == 0)
@@ -284,6 +292,12 @@ int main(void)
 
 	// a search of the default directory's volume must be cheap: Linux's /root a tmpfs, as in a taffy container, not the
 	// host's root file system under a plain Darling (whose search would read every directory on the disk)
+	if (contract && !getenv("FSGETPATH_TEST_DIR"))
+	{
+		check(0, "FSGETPATH_CONTRACT names a volume to check: set FSGETPATH_TEST_DIR");
+		printf("# %d failed\n", failures);
+		return failures;
+	}
 	if (!getenv("FSGETPATH_TEST_DIR") && (statfs(base, &fs) != 0 || strcmp(fs.f_fstypename, "tmpfs") != 0))
 	{
 		printf("ok - # SKIP %s isn't a tmpfs: set FSGETPATH_TEST_DIR to a directory on a small volume\n", base);
@@ -295,6 +309,7 @@ int main(void)
 	if (!mkdtemp(dir) || !realpath(dir, real) || statfs(real, &fs) != 0 || strcmp(fs.f_fstypename, "overlay") == 0)
 	{
 		check(0, "a directory to test in, on a volume that isn't an overlay (set FSGETPATH_TEST_DIR)");
+		printf("# %d failed\n", failures);
 		return failures;
 	}
 	snprintf(file, sizeof(file), "%s/a/b/file", real);
@@ -307,11 +322,14 @@ int main(void)
 	mkdir(sub, 0755);
 	close(open(file, O_CREAT | O_WRONLY, 0644));
 
+	if (path_from_id(real) != 1)
+		printf("# %s is on %s, mounted at %s: it doesn't claim PATH_FROM_ID\n", real, fs.f_fstypename, fs.f_mntonname);
 	check(path_from_id(real) == 1, "a volume that isn't an overlay claims PATH_FROM_ID");
 
 	// object ID 2: the volume's root, as XNU's VFS_ROOT(), unless the Linux file system numbers another object 2 (tmpfs
 	// numbers its root 1, and its first object 2)
 	check(ids(real, &fsid, &fileid) == 0, "getattrlist() hands out the volume and file IDs");
+	if (!contract)
 	{
 		char got[PATH_MAX];
 		struct stat st, root_st;
@@ -326,6 +344,7 @@ int main(void)
 	// a nested file this process never looked up: found by searching
 	check(ids_elsewhere(file, &fsid, &fileid) == 0 && finds(fsid, fileid, file), "a nested file, by searching");
 	// the fsid's second word only hints at the mount (binds of one file system share the first)
+	if (!contract)
 	{
 		fsid_t first = fsid;
 		first.val[1] = 0;
@@ -339,6 +358,7 @@ int main(void)
 	check(finds(fsid, fileid, moved), "a moved file, at its new path");
 
 	// a hard link: either of its names
+	if (!contract)
 	{
 		char got[PATH_MAX];
 		check(link(moved, link_) == 0, "a hard link");
@@ -349,6 +369,7 @@ int main(void)
 
 	// the deepest path a process can make, which it sees longer still: an answer, or ENOSPC, and never more than the
 	// buffer. darling-xnu once wrote past its own on the stack, and this process died on the first fsgetpath() here.
+	if (!contract)
 	{
 		static struct deep d;
 		char got[LINUX_PATH_MAX];
@@ -370,6 +391,7 @@ int main(void)
 	}
 
 	// errors, in XNU's order
+	if (!contract)
 	{
 		char small[8];
 		check(ids(moved, &fsid, &fileid) == 0, "IDs for the errors");
