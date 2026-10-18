@@ -5,7 +5,8 @@
 // from the handler's call instead of its checkin.
 //
 // The main thread starts THREADS short-lived threads one after another, with SIGUSR1 unblocked only while it does,
-// so that each new thread starts with it unblocked, as a workqueue thread does. Meanwhile a child process signals
+// so that each new thread starts with it unblocked, as a Darling workqueue thread does (it takes its creator's mask;
+// XNU's starts with signals blocked). Meanwhile a child process signals
 // this one again as soon as the last signal has been handled (or after WAIT_MS without), so that one is nearly always
 // on its way. Each thread must start, the process must live, and the signals must be handled. It uses only XNU's
 // interface.

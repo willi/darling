@@ -67,7 +67,8 @@ struct arg_struct
 	uintptr_t stack_bottom;
 	uintptr_t stack_addr;
 	bool is_workqueue;
-	// the creating thread's signal mask, which the new thread takes once it has checked in
+	// the creating thread's signal mask, which the new thread takes once it has checked in (a workqueue thread too,
+	// unlike XNU: see __darling_thread_create)
 	sigset_t sigmask;
 };
 
@@ -222,6 +223,11 @@ void* __darling_thread_create(unsigned long stack_size, unsigned long pth_obj_si
 	// signal handler's calls (interrupt_enter first) would have no socket to go out on, which aborts the process, or
 	// darlingserver would register the thread before its checkin. A daemon in dispatch_main() blocks signals on its
 	// main thread, so the process's signals go to its other threads, a new one too. Signals sent meanwhile stay pending.
+	//
+	// Then it takes its creator's mask, a workqueue thread too. That differs from XNU on purpose: XNU starts a
+	// workqueue thread with every asynchronous signal blocked (~workq_threadmask, bsd/kern/kern_fork.c) and its
+	// EVFILT_SIGNAL knotes see a signal without any thread taking it. Darling posts EVFILT_SIGNAL from sigexc_handler,
+	// so some thread must take the signal: with XNU's mask, a dispatch_main() daemon's signal sources would never fire.
 	sigset_t all_signals;
 	sigfillset(&all_signals);
 #if HAVE_PTHREAD_ATTR_SETSIGMASK_NP
