@@ -72,8 +72,9 @@ x() {
 	printf '%s' "$1" | sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g'
 }
 
-# the environment CoreSimulator gives launchd_sim ("Self") and its jobs ("Child")
-env_dict() {
+# the environment CoreSimulator gives launchd_sim ("Self": all of it) and its jobs ("Child"). launchd_sim sets Child
+# over a job's own EnvironmentVariables
+env_child() {
 	cat <<EOF
 <key>DYLD_ROOT_PATH</key><string>$(x "$R")</string>
 <key>SIMULATOR_ROOT</key><string>$(x "$R")</string>
@@ -88,9 +89,6 @@ env_dict() {
 <key>SIMULATOR_SHARED_RESOURCES_DIRECTORY</key><string>$(x "$D")</string>
 <key>SIMULATOR_LOG_ROOT</key><string>$(x "$D/Library/Logs")</string>
 <key>SIMULATOR_HOST_HOME</key><string>$(x "$HOME")</string>
-<key>HOME</key><string>$(x "$D")</string>
-<key>CFFIXED_USER_HOME</key><string>$(x "$D")</string>
-<key>TMPDIR</key><string>$(x "$D/tmp/")</string>
 <key>XPC_SIMULATOR_LAUNCHD_NAME</key><string>$(x "$NAME")</string>
 <key>SIMULATOR_MAINSCREEN_WIDTH</key><string>$(x "$SIM_SCREEN_WIDTH")</string>
 <key>SIMULATOR_MAINSCREEN_HEIGHT</key><string>$(x "$SIM_SCREEN_HEIGHT")</string>
@@ -109,6 +107,17 @@ EOF
 	fi
 }
 
+# and its jobs' defaults ("ChildDefaults"), which a job's own EnvironmentVariables override. The home and temporary
+# directory are defaults in CoreSimulator's launchd_bootstrap.plist: an app's job keeps the data container's, which
+# RunningBoard gives it (from installd's record, through FrontBoard)
+env_defaults() {
+	cat <<EOF
+<key>CFFIXED_USER_HOME</key><string>$(x "$D")</string>
+<key>HOME</key><string>$(x "$D")</string>
+<key>TMPDIR</key><string>$(x "$D/tmp/")</string>
+EOF
+}
+
 # a device booted before keeps its job files, and with them their modes: they're written anew with this umask
 rm -f "$D/var/run/launchd_bootstrap.plist" "$JOB" "$SIM_IOKIT_JOB"
 
@@ -119,8 +128,9 @@ cat >"$D/var/run/launchd_bootstrap.plist" <<EOF
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
 <key>Bootstrap</key><dict>
-<key>Self</key><dict>$(env_dict)</dict>
-<key>Child</key><dict>$(env_dict)</dict>
+<key>Self</key><dict>$(env_child)$(env_defaults)</dict>
+<key>Child</key><dict>$(env_child)</dict>
+<key>ChildDefaults</key><dict>$(env_defaults)</dict>
 <key>Paths</key><array><string>$(x "$D/var/run/LaunchDaemons")</string></array>
 <key>SimulatorRuntimeRoot</key><string>$(x "$R")</string>
 </dict>
