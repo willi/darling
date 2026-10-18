@@ -44,5 +44,6 @@ darling_test(asuid_spawn)
 darling_test(fork_special_ports)
 darling_test(signal_flood)
 darling_test(thread_start_signals)
+darling_test(thread_create_fails)
 
 install(PROGRAMS run-all.sh DESTINATION libexec/darling/usr/libexec/darling-tests)

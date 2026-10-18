@@ -144,6 +144,7 @@ static dthread_t dthread_structure_allocate(size_t stack_size, size_t guard_size
 	return dthread_structure_init(dthread, guard_size, *stack_addr, stack_size, base_addr, total_size);
 };
 
+// Returns the new thread's pthread structure, or NULL if it couldn't be started.
 void* __darling_thread_create(unsigned long stack_size, unsigned long pth_obj_size,
 				void* entry_point, uintptr_t real_entry_point,
 				uintptr_t arg1, uintptr_t arg2, uintptr_t arg3,
@@ -173,7 +174,8 @@ void* __darling_thread_create(unsigned long stack_size, unsigned long pth_obj_si
 	// in those cases, just use what we're given (it also contains more information)
 	//
 	// otherwise, allocate them ourselves
-	if (pth == NULL || args.is_workqueue) {
+	bool allocated = pth == NULL || args.is_workqueue;
+	if (allocated) {
 		pth = dthread_structure_allocate(stack_size, DEFAULT_DTHREAD_GUARD_SIZE, (void**)&args.stack_addr);
 	} else if (!args.is_workqueue) {
 		// `arg2` is `stack_addr` for normal threads
@@ -202,9 +204,18 @@ void* __darling_thread_create(unsigned long stack_size, unsigned long pth_obj_si
 	sigset_t all_signals;
 	sigfillset(&all_signals);
 	pthread_sigmask(SIG_SETMASK, &all_signals, &args.sigmask);
-	pthread_create(&nativeLibcThread, &attr, darling_thread_entry, &args);
+	int err = pthread_create(&nativeLibcThread, &attr, darling_thread_entry, &args);
 	pthread_sigmask(SIG_SETMASK, &args.sigmask, NULL);
 	pthread_attr_destroy(&attr);
+
+	// no thread will clear args.pth: the caller fails the call (as XNU's bsdthread_create does)
+	if (err != 0) {
+		if (allocated) {
+			dthread_t dthread = pth;
+			munmap(dthread->freeaddr, dthread->freesize);
+		}
+		return NULL;
+	}
 
 	while (args.pth != NULL)
 		sched_yield();
