@@ -81,12 +81,19 @@ x() {
 	printf '%s' "$1" | sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g'
 }
 
+# the directory of the device's dyld shared cache, as CoreSimulator names it: the runtime's cache for the host's macOS
+# build (sw_vers's; Darling's is "Darling"). Darling builds no cache there, and dyld_sim then runs without one: with
+# DYLD_SHARED_CACHE_DIR set, it looks nowhere else (dyld's CacheFinder)
+: "${SIM_DYLD_SHARED_CACHE_DIR:=/Library/Developer/CoreSimulator/Caches/dyld/$(sw_vers -buildVersion)/$SIM_RUNTIME_IDENTIFIER.$SIM_RUNTIME_BUILD_VERSION/}"
+
 # the environments CoreSimulator gives launchd_sim's jobs. "Child" is this one: launchd_sim sets it over a job's own
 # EnvironmentVariables. launchd_sim's own environment, "Self", is Child and the defaults below together (a Mac's Self
 # lacks one key of its Child's, VM_KERNEL_PAGE_SIZE_4K, which this Child doesn't set)
 env_child() {
 	cat <<EOF
 <key>DYLD_ROOT_PATH</key><string>$(x "$R")</string>
+<key>DYLD_SHARED_CACHE_DIR</key><string>$(x "$SIM_DYLD_SHARED_CACHE_DIR")</string>
+<key>PATH</key><string>$(x "$R/usr/bin:$R/bin:$R/usr/sbin:$R/sbin:$R/usr/local/bin")</string>
 <key>SIMULATOR_ROOT</key><string>$(x "$R")</string>
 <key>IPHONE_SIMULATOR_ROOT</key><string>$(x "$R")</string>
 <key>SIMULATOR_RUNTIME_VERSION</key><string>$(x "$SIM_RUNTIME_VERSION")</string>
@@ -119,10 +126,13 @@ EOF
 
 # "ChildDefaults", the jobs' defaults: a job's own EnvironmentVariables override them. The home and temporary directory
 # are defaults in CoreSimulator's launchd_bootstrap.plist: an app's job keeps the data container's, which RunningBoard
-# gives it (from installd's record, through FrontBoard), and a job without its own (a daemon's) gets the device's data
+# gives it (from installd's record, through FrontBoard), and a job without its own (a daemon's) gets the device's data.
+# dyld's fallback paths are the runtime's, as CoreSimulator's are. Each key is in the dict CoreSimulator puts it in
 env_defaults() {
 	cat <<EOF
 <key>CFFIXED_USER_HOME</key><string>$(x "$D")</string>
+<key>DYLD_FALLBACK_FRAMEWORK_PATH</key><string>$(x "$R/System/Library/Frameworks")</string>
+<key>DYLD_FALLBACK_LIBRARY_PATH</key><string>$(x "$R/usr/lib")</string>
 <key>HOME</key><string>$(x "$D")</string>
 <key>TMPDIR</key><string>$(x "$D/tmp/")</string>
 EOF

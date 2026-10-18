@@ -55,6 +55,12 @@ daemon or a system app, gets the device's data directory, as on a Mac. A Mac's b
 show the two dicts and that a job's own variables override `ChildDefaults`. That `Child` overrides them comes from this
 device, while the three were in `Child`: an app got the data directory, though RunningBoard had given its job the
 container.
+dyld's variables are CoreSimulator's too. `Child` has `DYLD_ROOT_PATH`, `PATH` (the runtime's `usr/bin`, `bin`,
+`usr/sbin`, `sbin` and `usr/local/bin`) and `DYLD_SHARED_CACHE_DIR`. `ChildDefaults` has `DYLD_FALLBACK_FRAMEWORK_PATH`
+and `DYLD_FALLBACK_LIBRARY_PATH` (the runtime's `System/Library/Frameworks` and `usr/lib`). `DYLD_SHARED_CACHE_DIR` is
+`SIM_DYLD_SHARED_CACHE_DIR`, by default where CoreSimulator keeps the runtime's cache for the host:
+`/Library/Developer/CoreSimulator/Caches/dyld/<sw_vers -buildVersion>/<SIM_RUNTIME_IDENTIFIER>.<build>/`. Darling
+builds no cache there, so dyld_sim runs without one.
 `simboot.sh` needs umask 022 (or one that also keeps group and others from writing): `launchctl` skips job plists that
 group or others can write. A `darling shell` has `launchd`'s umask, which `darling` starts with at least 022.
 `launchd_sim` logs to `/private/var/tmp/com.apple.CoreSimulator.SimDevice.<udid>/launchd.log`.
