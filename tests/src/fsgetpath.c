@@ -187,6 +187,53 @@ static int bulk_file(const char* dir, char* path, fsid_t* fsid, uint64_t* fileid
 	return found;
 }
 
+// CarbonCore's FSRef (FSPathMakeRef(), FSRefMakePath()), libsystem_kernel's: an 80-byte reference to an object
+extern int sys_name_to_handle(const char* name, void* ref, int follow);
+extern int sys_handle_to_name(void* ref, char name[4096]);
+
+// a reference made by another process, which never looked the object up
+static int ref_elsewhere(const char* path, unsigned char ref[80])
+{
+	struct
+	{
+		int ret;
+		unsigned char ref[80];
+	} b = { -1 };
+	int fds[2];
+
+	if (pipe(fds) != 0)
+		return -1;
+	pid_t pid = fork();
+	if (pid == 0)
+	{
+		close(fds[0]);
+		b.ret = sys_name_to_handle(path, b.ref, 0);
+		write(fds[1], &b, sizeof(b));
+		_exit(0);
+	}
+	close(fds[1]);
+	ssize_t n = read(fds[0], &b, sizeof(b));
+	close(fds[0]);
+	waitpid(pid, NULL, 0);
+	if (n != sizeof(b) || b.ret != 0)
+		return -1;
+	memcpy(ref, b.ref, sizeof(b.ref));
+	return 0;
+}
+
+// whether the reference resolves to path
+static int ref_names(unsigned char ref[80], const char* path)
+{
+	static char got[4096];
+	int ret = sys_handle_to_name(ref, got);
+	if (ret != 0 || strcmp(got, path) != 0)
+	{
+		printf("# FSRef: %s (want %s)\n", ret != 0 ? strerror(-ret) : got, path);
+		return 0;
+	}
+	return 1;
+}
+
 static int fails_with(ssize_t n, int err)
 {
 	if (n >= 0 || errno != err)
@@ -356,6 +403,23 @@ int main(void)
 	// a remembered lookup that no longer leads to the object is searched past
 	rename(file, moved);
 	check(finds(fsid, fileid, moved), "a moved file, at its new path");
+
+	// CarbonCore's FSRef holds the object's volume and ID, which fsgetpath()'s lookup resolves: made by another process,
+	// or here and then moved; and one to a file of the prefix, which only the path it was made from leads to
+	if (!contract)
+	{
+		unsigned char ref[80];
+		char refd[PATH_MAX], refm[PATH_MAX];
+		snprintf(refd, sizeof(refd), "%s/a/b/ref", real);
+		snprintf(refm, sizeof(refm), "%s/a/ref.moved", real);
+		close(open(refd, O_CREAT | O_WRONLY, 0644));
+		check(ref_elsewhere(refd, ref) == 0 && ref_names(ref, refd), "an FSRef another process made");
+		check(sys_name_to_handle(refd, ref, 0) == 0 && rename(refd, refm) == 0 && ref_names(ref, refm),
+			"an FSRef made here, to a file since moved");
+		check(sys_name_to_handle("/usr/lib/libSystem.B.dylib", ref, 0) == 0 && ref_names(ref, "/usr/lib/libSystem.B.dylib"),
+			"an FSRef to a file of the prefix");
+		unlink(refm);
+	}
 
 	// a hard link: either of its names
 	if (!contract)
