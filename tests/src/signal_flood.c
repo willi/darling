@@ -1,10 +1,10 @@
 // A thread that takes a steady stream of handled signals still runs between them. Darling handles each signal
-// through darlingserver (interrupt_enter, sigprocess, interrupt_exit); sigexc's debug output, compiled in, added some
-// 80 more calls per signal (each a kprintf of a register), which made a signal cost 40 to 70 ms on a loaded host. At
+// through darlingserver (interrupt_enter, sigprocess, interrupt_exit); sigexc's debug output, compiled in, added about
+// 76 more calls per signal (each a kprintf of a register), which made a signal cost 12 to 67 ms on a loaded host. At
 // 50 signals a second, the thread then took the next one as soon as it returned from the last, and never ran again
 // until they stopped: starting a thread hung that way while another process signalled.
 //
-// First, a handled signal the thread sends itself must cost at most MAX_CALLS times a pair of Mach calls
+// First, a handled signal the thread sends itself must cost at most MAX_PAIRS times a pair of Mach calls
 // (mach_thread_self() and mach_port_deallocate(), each a darlingserver call too), whatever the host's load: the two
 // are timed in alternating batches, and each takes its fastest batch, since a stall only ever adds time. Then a
 // child signals this process every PERIOD_MS for FLOOD_MS. The main thread, the only one that takes the signal,
@@ -28,8 +28,9 @@
 #define MAX_GAP_MS 1000
 #define BATCHES 20
 #define ROUNDS 10
-// a signal is 4 calls (interrupt_enter, thread_self_trap, sigprocess, interrupt_exit) and raise()'s pthread_kill
-#define MAX_CALLS 10
+// A signal is 3 calls (interrupt_enter, sigprocess, interrupt_exit) and raise()'s pthread_kill: 2 pairs. Timed this
+// way, it measures 1.2 to 4.1 pairs; with the debug output, 59 to 149. 15 leaves about 4 times either way.
+#define MAX_PAIRS 15
 
 static atomic_int handled;
 
@@ -77,9 +78,9 @@ int main(void)
 	qsort(pairs, BATCHES, sizeof(double), compare);
 	qsort(signals, BATCHES, sizeof(double), compare);
 	double pair = pairs[0], signal = signals[0];
-	printf("%s - a handled signal costs %.1f times a Mach call pair (at most %d): %.3f ms vs %.3f ms\n",
-		signal <= MAX_CALLS * pair ? "ok" : "not ok", signal / pair, MAX_CALLS, signal, pair);
-	if (signal > MAX_CALLS * pair)
+	printf("%s - a handled signal costs %.1f Mach call pairs (at most %d): %.3f ms vs %.3f ms\n",
+		signal <= MAX_PAIRS * pair ? "ok" : "not ok", signal / pair, MAX_PAIRS, signal, pair);
+	if (signal > MAX_PAIRS * pair)
 		failed++;
 	atomic_store(&handled, 0);
 
