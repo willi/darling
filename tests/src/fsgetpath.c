@@ -268,8 +268,18 @@ int main(void)
 		char got[LINUX_PATH_MAX];
 		check(make_deep(real, &d) == 0 && ids_elsewhere_of(0, d.fds[d.n], &fsid, &fileid) == 0,
 			"a directory at the deepest path a process can make");
+		// XNU takes buffers of up to MAXLONGPATHLEN, 8192
+		static char big[8192];
+		size_t want = strlen(d.want) + 1;
 		check(fails_with(fsgetpath(got, sizeof(got), &fsid, fileid), ENOSPC),
 			"a path longer than a page, as the process sees it, in a page: ENOSPC");
+		check(fsgetpath(big, sizeof(big), &fsid, fileid) == (ssize_t) want && strcmp(big, d.want) == 0,
+			"the same path, in a buffer of 8192");
+		memset(big, 'x', sizeof(big));
+		check(fails_with(fsgetpath(big, want - 1, &fsid, fileid), ENOSPC) && big[want - 2] == 'x',
+			"a buffer one byte short of the path and its NUL: ENOSPC, nothing written");
+		check(fsgetpath(big, want, &fsid, fileid) == (ssize_t) want && big[want - 1] == '\0',
+			"a buffer of exactly the path and its NUL");
 		remove_deep(&d);
 	}
 
@@ -280,7 +290,9 @@ int main(void)
 		check(fails_with(fsgetpath(small, sizeof(small), &fsid, fileid), ENOSPC), "a buffer the path doesn't fit: ENOSPC");
 		char big[8192];
 		check(fails_with(fsgetpath(big, 0, &fsid, fileid), EINVAL), "a buffer of 0: EINVAL");
-		check(fails_with(fsgetpath(big, sizeof(big), &fsid, fileid), EINVAL), "a buffer of more than a page: EINVAL");
+		check(fails_with(fsgetpath(big, sizeof(big) + 1, &fsid, fileid), EINVAL),
+			"a buffer of more than MAXLONGPATHLEN (8192): EINVAL");
+		check(fsgetpath(big, sizeof(big), &fsid, fileid) > 0, "a buffer of MAXLONGPATHLEN");
 		check(fails_with(fsgetpath_ext(big, PATH_MAX, &fsid, fileid, 0x1), EINVAL), "an unknown option: EINVAL");
 		check(fsgetpath_ext(big, PATH_MAX, &fsid, fileid, FSOPT_NOFIRMLINKPATH) > 0, "fsgetpath_ext(FSOPT_NOFIRMLINKPATH)");
 
