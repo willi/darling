@@ -327,6 +327,14 @@ int main(void)
 		}
 	}
 
+	// the fileid cache: a lookup this process made answers alone. A file of the prefix's lower layer reports a device that
+	// isn't the prefix's, so a search can't give its path in the prefix (only one outside it, or none)
+	if (!contract)
+	{
+		const char* f = "/usr/lib/libSystem.B.dylib";
+		check(ids(f, &fsid, &fileid) == 0 && finds(fsid, fileid, f), "a file of the prefix, by the lookup this process made");
+	}
+
 	// getattrlistbulk() hands out IDs (CFURL's enumerators, LaunchServices' bundle scans), which fsgetpath() then finds:
 	// for a file of the prefix's lower layer, whose device no mount is of, only by that
 	if (!contract)
