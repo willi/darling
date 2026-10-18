@@ -186,12 +186,13 @@ void* __darling_thread_create(unsigned long stack_size, unsigned long pth_obj_si
 
 	// pthread_attr_setstack is buggy. The documentation states we should provide the lowest
 	// address of the stack, yet some versions regard it as the highest address instead.
-	// Therefore it's better to just make the pthread stack as small as possible and then switch
-	// to our own stack instead.
+	// Therefore the Linux thread runs on glibc's own stack until it switches to ours.
 	//pthread_attr_setstack(&attr, ((char*)pth) + pth_obj_size, stack_size - pth_obj_size - 0x1000);
 
 	// std::cout << "Allocated stack at " << pth << ", size " << stack_size << std::endl;
 
+	// This fails (EINVAL: 4096 is below PTHREAD_STACK_MIN), so glibc's stack is its default size (8 MiB, from
+	// RLIMIT_STACK). Keep it large: darling_thread_entry runs on it, and so would a signal handler that ran there.
 	pthread_attr_setstacksize(&attr, 4096);
 
 	//pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
@@ -265,9 +266,6 @@ static void* darling_thread_entry(void* p)
 	dthread->tsd[DTHREAD_TSD_SLOT_MACH_THREAD_SELF] = (void*)(intptr_t)thread_self_port;
 	args.port = thread_self_port;
 
-	// registered, on our own socket: a signal handler may run now
-	pthread_sigmask(SIG_SETMASK, &args.sigmask, NULL);
-
 	in_args->pth = NULL;
 
 	if (setjmp(t_jmpbuf))
@@ -277,6 +275,12 @@ static void* darling_thread_entry(void* p)
 		pthread_detach(pthread_self());
 		return NULL;
 	}
+
+	// The last step before the jump: a signal handler may run now. The thread is registered, on its own socket, has
+	// its alternate signal stack, and could terminate (longjmp above). Its creator has gone on, so a handler waiting
+	// for something the creator holds doesn't stop both.
+	args.callbacks->signal_stack_setup();
+	pthread_sigmask(SIG_SETMASK, &args.sigmask, NULL);
 
 	void *stack_ptr = align_16(args.stack_addr);
 

@@ -10,6 +10,8 @@ struct darling_thread_create_callbacks {
 	void (*thread_set_tsd_base)(void*, int);
 	void (*rpc_guard)(int);
 	void (*rpc_unguard)(int);
+	// gives the new thread its alternate signal stack, before its signals are unblocked
+	void (*signal_stack_setup)(void);
 };
 
 typedef const struct darling_thread_create_callbacks* darling_thread_create_callbacks_t;
