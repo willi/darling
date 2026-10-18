@@ -469,6 +469,12 @@ int main(void)
 		check(ids(moved, &fsid, &fileid) == 0, "IDs for the errors");
 		check(fails_with(fsgetpath(small, sizeof(small), &fsid, fileid), ENOSPC), "a buffer the path doesn't fit: ENOSPC");
 		char big[8192];
+		// the length counts the NUL: a buffer of the path alone is ENOSPC, and nothing is written past it
+		size_t n = strlen(moved) + 1;
+		memset(big, 'x', sizeof(big));
+		check(fails_with(fsgetpath(big, n - 1, &fsid, fileid), ENOSPC) && big[n - 1] == 'x',
+			"a buffer of the path without its NUL: ENOSPC, nothing written past it");
+		check(fsgetpath(big, n, &fsid, fileid) == (ssize_t) n && strcmp(big, moved) == 0, "a buffer of the path and its NUL");
 		check(fails_with(fsgetpath(big, 0, &fsid, fileid), EINVAL), "a buffer of 0: EINVAL");
 		check(fails_with(fsgetpath(big, sizeof(big) + 1, &fsid, fileid), EINVAL),
 			"a buffer of more than MAXLONGPATHLEN (8192): EINVAL");
