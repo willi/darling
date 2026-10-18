@@ -219,7 +219,23 @@ int main(void)
 	fsid_t fsid;
 	uint64_t fileid;
 
-	check(path_from_id("/private/tmp") == 0, "the prefix, an overlay, doesn't claim PATH_FROM_ID");
+	check(path_from_id("/private/tmp") == 0, "the prefix, an overlay whose files report its layers' devices, doesn't claim PATH_FROM_ID");
+
+	// an overlay whose files report its own device (its layers on one file system, as Docker's): claims, and a file
+	// there is found by searching
+	{
+		struct stat dir_st, file_st;
+		const char* d = "/Volumes/SystemRoot/etc", *f = "/Volumes/SystemRoot/etc/passwd";
+		if (statfs(d, &fs) == 0 && strcmp(fs.f_fstypename, "overlay") == 0 && lstat(d, &dir_st) == 0 &&
+			lstat(f, &file_st) == 0)
+		{
+			if (file_st.st_dev == dir_st.st_dev)
+				check(path_from_id(d) == 1 && ids_elsewhere(f, &fsid, &fileid) == 0 && finds(fsid, fileid, f),
+					"Linux's root, an overlay whose files report its device, claims PATH_FROM_ID: a file there by searching");
+			else
+				check(path_from_id(d) == 0, "Linux's root, an overlay whose files report its layers' devices, doesn't claim PATH_FROM_ID");
+		}
+	}
 
 	snprintf(dir, sizeof(dir), "%s/fsgetpath.XXXXXX", base);
 	if (!mkdtemp(dir) || !realpath(dir, real) || statfs(real, &fs) != 0 || strcmp(fs.f_fstypename, "overlay") == 0)
