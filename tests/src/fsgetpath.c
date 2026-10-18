@@ -7,7 +7,8 @@
 // layers' devices): $FSGETPATH_TEST_DIR, or Linux's /root, a tmpfs in a taffy container. The prefix itself is an
 // overlay, which must not claim PATH_FROM_ID.
 //
-// Prints one "ok"/"not ok" line per check; the exit status is the number of failed checks.
+// Prints one "ok"/"not ok" line per check, then "# N failed" (a run without that line crashed); the exit status is the
+// number of failed checks.
 
 #include <errno.h>
 #include <fcntl.h>
@@ -156,13 +157,15 @@ static int fails_with(ssize_t n, int err)
 	return 1;
 }
 
-// The longest path fsgetpath()'s search builds: a Linux path of PATH_MAX - 1 bytes, in levels made relative to the
-// one above (a process can't name the path whole). Outside the prefix the process sees it 19 bytes longer, under
-// /Volumes/SystemRoot. want gets that path; levels[] the directories' descriptors, deepest last, then the file's.
+// The deepest directory a process can make: a Linux path of LINUX_PATH_MAX - 2 bytes (Linux's PATH_MAX, not Darwin's
+// 1024; Darling's path expansion keeps a byte for a trailing "/"), in levels made relative to the one above, as a
+// process can't name the path whole. Outside the prefix the process sees it 19 bytes longer, under
+// /Volumes/SystemRoot, which is past a page. want gets that path; fds[] the directories' descriptors, the deepest last.
+#define LINUX_PATH_MAX 4096
 #define DEEP_LEVELS 32
 struct deep
 {
-	char want[PATH_MAX + 64], names[DEEP_LEVELS][256];
+	char want[LINUX_PATH_MAX + 64], names[DEEP_LEVELS][256];
 	int fds[DEEP_LEVELS + 1], n;
 };
 
@@ -171,7 +174,7 @@ static int make_deep(const char* real, struct deep* d)
 	const char* exit_path = "/Volumes/SystemRoot";
 	if (strncmp(real, exit_path, strlen(exit_path)) != 0)
 		return -1;
-	int left = (PATH_MAX - 1) - (int) (strlen(real) - strlen(exit_path));
+	int left = (LINUX_PATH_MAX - 2) - (int) (strlen(real) - strlen(exit_path));
 	int at = open(real, O_RDONLY | O_DIRECTORY);
 	strcpy(d->want, real);
 	d->n = 0;
@@ -186,17 +189,13 @@ static int make_deep(const char* real, struct deep* d)
 		strcat(d->want, "/");
 		strcat(d->want, d->names[d->n]);
 		left -= 1 + len;
-		int fd;
-		if (left == 0)
-			fd = openat(at, d->names[d->n], O_CREAT | O_WRONLY, 0644);
-		else if (mkdirat(at, d->names[d->n], 0755) == 0)
-			fd = openat(at, d->names[d->n], O_RDONLY | O_DIRECTORY);
-		else
-			fd = -1;
+		int fd = mkdirat(at, d->names[d->n], 0755) == 0 ? openat(at, d->names[d->n], O_RDONLY | O_DIRECTORY) : -1;
 		d->fds[d->n++] = at;
 		at = fd;
 	}
 	d->fds[d->n] = at;
+	if (at < 0 || left != 0)
+		printf("# the deep tree stopped %d bytes short, at level %d: %s\n", left, d->n, strerror(errno));
 	return at >= 0 && left == 0 ? 0 : -1;
 }
 
@@ -205,13 +204,15 @@ static void remove_deep(struct deep* d)
 	for (int i = d->n - 1; i >= 0; i--)
 	{
 		close(d->fds[i + 1]);
-		unlinkat(d->fds[i], d->names[i], i == d->n - 1 ? 0 : AT_REMOVEDIR);
+		unlinkat(d->fds[i], d->names[i], AT_REMOVEDIR);
 	}
 	close(d->fds[0]);
 }
 
 int main(void)
 {
+	// each line as it's checked, so a crash shows where
+	setvbuf(stdout, NULL, _IOLBF, 0);
 	const char* base = getenv("FSGETPATH_TEST_DIR") ? getenv("FSGETPATH_TEST_DIR") : "/Volumes/SystemRoot/root";
 	char dir[PATH_MAX], real[PATH_MAX], sub[PATH_MAX], file[PATH_MAX], link_[PATH_MAX], moved[PATH_MAX], gone[PATH_MAX];
 	struct statfs fs;
@@ -260,15 +261,15 @@ int main(void)
 		check(n > 0 && (strcmp(got, moved) == 0 || strcmp(got, link_) == 0), "a hard link, by one of its names");
 	}
 
-	// the longest path the search builds, which the process sees longer still: an answer, or ENOSPC, and never more
-	// than the buffer (darling-xnu once wrote past its own, on the stack)
+	// the deepest path a process can make, which it sees longer still: an answer, or ENOSPC, and never more than the
+	// buffer. darling-xnu once wrote past its own on the stack, and this process died on the first fsgetpath() here.
 	{
-		struct deep d;
-		char got[PATH_MAX];
+		static struct deep d;
+		char got[LINUX_PATH_MAX];
 		check(make_deep(real, &d) == 0 && ids_elsewhere_of(0, d.fds[d.n], &fsid, &fileid) == 0,
-			"a file at the deepest path the search builds");
+			"a directory at the deepest path a process can make");
 		check(fails_with(fsgetpath(got, sizeof(got), &fsid, fileid), ENOSPC),
-			"a path longer than a page, as the process sees it: ENOSPC");
+			"a path longer than a page, as the process sees it, in a page: ENOSPC");
 		remove_deep(&d);
 	}
 
@@ -298,5 +299,6 @@ int main(void)
 	snprintf(sub, sizeof(sub), "%s/a", real);
 	rmdir(sub);
 	rmdir(real);
+	printf("# %d failed\n", failures);
 	return failures;
 }
