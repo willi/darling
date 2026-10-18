@@ -41,5 +41,6 @@ darling_test(getentropy)
 darling_test(ffsctl_open_once)
 darling_test(vm_purgable)
 darling_test(asuid_spawn)
+darling_test(fork_special_ports)
 
 install(PROGRAMS run-all.sh DESTINATION libexec/darling/usr/libexec/darling-tests)
