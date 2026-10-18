@@ -19,6 +19,7 @@ set -eu
 . "$(dirname "$0")/simdevice.sh"
 : "${SIM_DAEMONS:=com.apple.cfprefsd.xpc.daemon com.apple.logd com.apple.logd_helper}"
 : "${SIM_BOOT_TIMEOUT:=60}"
+sim_check_seconds SIM_BOOT_TIMEOUT "$SIM_BOOT_TIMEOUT"
 
 R="$SIM_RUNTIME_ROOT"
 D="$SIM_DEVICE_DATA"
@@ -179,12 +180,12 @@ launchctl load "$SIM_IOKIT_JOB"
 # booted once launchd_sim has left bootstrap mode and simiokitd has registered the device's IOKit in it (a daemon that
 # asks IOKit before then gets no answer). The timeout is in seconds, not passes: each grep is a process start, which a
 # loaded host makes slow.
-end=$(($(date +%s) + SIM_BOOT_TIMEOUT))
+sim_wait_start
 while :; do
 	# one look at each half, for the wait and for what a timeout says is missing (the log is removed above)
 	sim_boot_state
 	[ "$SIM_BOOT_STATE" = booted ] && break
-	if [ "$(date +%s)" -gt "$end" ]; then
+	if [ "$SIM_WAITED" -gt "$SIM_BOOT_TIMEOUT" ]; then
 		echo "$NAME didn't finish booting in ${SIM_BOOT_TIMEOUT}s; see $LOG, $D/Library/Logs/launchd_sim.log and $SIM_IOKIT_LOG" >&2
 		case $SIM_BOOT_STATE in
 		bootstrap) echo "launchd_sim didn't leave bootstrap mode" >&2 ;;
@@ -202,5 +203,6 @@ while :; do
 		exit 1
 	fi
 	sleep 1
+	sim_waited
 done
 echo "booted $NAME"

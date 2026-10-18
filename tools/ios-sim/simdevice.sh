@@ -88,3 +88,33 @@ sim_boot_state() {
 		unset sim_iokit
 	fi
 }
+
+# sim_check_seconds NAME VALUE: exit 64 unless VALUE, NAME's, is a whole number of seconds (ten digits at most)
+sim_check_seconds() {
+	case $2 in
+	'' | *[!0-9]* | ???????????*)
+		echo "$1 must be a whole number of seconds: $2" >&2
+		exit 64
+		;;
+	esac
+}
+
+# sim_wait_start, then sim_waited after each pass's sleep 1: SIM_WAITED is the seconds waited so far, each pass counting
+# as at least 1 s and at most 30, far over any pass a loaded host takes: the wall clock jumping (a resume from suspend, an
+# NTP step) neither ends a wait at once nor stretches it. Darling has no other clock: its CLOCK_MONOTONIC is the time
+# of day too.
+sim_wait_start() {
+	sim_wait_prev=$(date +%s)
+	SIM_WAITED=0
+}
+sim_waited() {
+	sim_wait_now=$(date +%s)
+	sim_wait_pass=$((sim_wait_now - sim_wait_prev))
+	sim_wait_prev=$sim_wait_now
+	if [ "$sim_wait_pass" -lt 1 ]; then
+		sim_wait_pass=1
+	elif [ "$sim_wait_pass" -gt 30 ]; then
+		sim_wait_pass=30
+	fi
+	SIM_WAITED=$((SIM_WAITED + sim_wait_pass))
+}

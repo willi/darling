@@ -10,6 +10,7 @@ set -eu
 # shellcheck source=simdevice.sh
 . "$(dirname "$0")/simdevice.sh"
 : "${SIM_SHUTDOWN_TIMEOUT:=30}"
+sim_check_seconds SIM_SHUTDOWN_TIMEOUT "$SIM_SHUTDOWN_TIMEOUT"
 
 if [ $# -gt 0 ]; then
 	echo "usage: $0" >&2
@@ -22,14 +23,14 @@ fi
 
 # It returns once launchd_sim has exited, and exits 0 even when it failed: the job going away is what counts.
 launchctl unload "$SIM_DEVICE_JOB" &
-# in seconds, not passes, as simboot.sh's
-end=$(($(date +%s) + SIM_SHUTDOWN_TIMEOUT))
+sim_wait_start
 while launchctl list "$SIM_DEVICE_JOB_LABEL" >/dev/null 2>&1; do
-	if [ "$(date +%s)" -gt "$end" ]; then
+	if [ "$SIM_WAITED" -gt "$SIM_SHUTDOWN_TIMEOUT" ]; then
 		echo "$SIM_DEVICE_JOB_LABEL didn't shut down in ${SIM_SHUTDOWN_TIMEOUT}s; see $SIM_DEVICE_LOG" >&2
 		exit 1
 	fi
 	sleep 1
+	sim_waited
 done
 wait
 launchctl unload "$SIM_IOKIT_JOB" 2>/dev/null || true
