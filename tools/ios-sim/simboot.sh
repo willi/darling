@@ -10,7 +10,8 @@
 # SIM_DAEMONS lists the runtime's LaunchDaemons the device loads (labels; default: cfprefsd, and logd with its
 # helper; "all": every one, as CoreSimulator loads them). launchd_sim starts each when a client first looks it up, or at
 # load if it says so. SIM_EXTRA_ENVIRONMENT adds NAME=VALUE pairs (space-separated) to the environment of the device's
-# launchd_sim and its jobs. The device's other variables are in simdevice.sh.
+# launchd_sim and its jobs. SIM_UID and SIM_GID are the user and group the device runs as: launchd_sim, and every
+# process it starts (README.md). The device's other variables are in simdevice.sh.
 set -eu
 : "${SIM_RUNTIME_ROOT:?set SIM_RUNTIME_ROOT to the RuntimeRoot of the runtime}"
 # shellcheck source=simdevice.sh
@@ -28,6 +29,19 @@ if [ $# -gt 0 ]; then
 	echo "usage: SIM_RUNTIME_ROOT=<RuntimeRoot> $0" >&2
 	exit 64
 fi
+# simasuid takes 0 to 2147483647, as Darling keeps ids; here, before a job that would fail out of sight
+for id in "$SIM_UID" "$SIM_GID"; do
+	case $id in
+	'' | *[!0-9]* | ???????????*)
+		echo "SIM_UID and SIM_GID must be numbers from 0 to 2147483647: $SIM_UID, $SIM_GID" >&2
+		exit 64
+		;;
+	esac
+	if [ "$id" -gt 2147483647 ]; then
+		echo "SIM_UID and SIM_GID must be numbers from 0 to 2147483647: $SIM_UID, $SIM_GID" >&2
+		exit 64
+	fi
+done
 if launchctl list "$NAME" >/dev/null 2>&1; then
 	if grep -qF "$SIM_DEVICE_BOOTED" "$LOG" 2>/dev/null; then
 		echo "$NAME is already booted" >&2
@@ -113,14 +127,20 @@ cat >"$D/var/run/launchd_bootstrap.plist" <<EOF
 </dict></plist>
 EOF
 
-# the job CoreSimulator submits: the trampoline checks the device's name in and becomes launchd_sim
+# the job CoreSimulator submits (to the domain of the user who boots the device, so launchd_sim runs as that user):
+# the trampoline checks the device's name in and becomes launchd_sim. Darling's launchd runs its jobs as root, so a
+# device as anyone else starts through simasuid.
+as_user=
+if [ "$SIM_UID" != 0 ] || [ "$SIM_GID" != 0 ]; then
+	as_user="<string>/usr/libexec/ios-sim/simasuid</string><string>$SIM_UID</string><string>$SIM_GID</string>"
+fi
 cat >"$JOB" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
 <key>Label</key><string>$(x "$NAME")</string>
 <key>MachServices</key><dict><key>$(x "$NAME")</key><dict><key>ResetAtClose</key><true/></dict></dict>
-<key>ProgramArguments</key><array>
+<key>ProgramArguments</key><array>$as_user
 <string>$(x "$R/sbin/launchd_sim_trampoline")</string>
 <string>$(x "$R/sbin/launchd_sim")</string>
 <string>$(x "$D/var/run/launchd_bootstrap.plist")</string>
@@ -132,13 +152,14 @@ cat >"$JOB" <<EOF
 EOF
 
 # Darling has no kernel IOKit for the device's IOKit to talk to, as a Mac does: with IOS_SIMULATOR_IOKITSIMD set, the
-# device's IOKit looks up com.apple.iokitsimd instead, which simiokitd registers in the device once it is up
+# device's IOKit looks up com.apple.iokitsimd instead, which simiokitd registers in the device once it is up.
+# launchd_sim takes a host client's request only from its own user (README.md), so simiokitd runs as the device does.
 cat >"$SIM_IOKIT_JOB" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
 <key>Label</key><string>$(x "$SIM_IOKIT_JOB_LABEL")</string>
-<key>ProgramArguments</key><array><string>/usr/libexec/ios-sim/simiokitd</string></array>
+<key>ProgramArguments</key><array>$as_user<string>/usr/libexec/ios-sim/simiokitd</string></array>
 <key>EnvironmentVariables</key><dict>
 <key>SIM_RUNTIME_ROOT</key><string>$(x "$R")</string>
 <key>SIM_UDID</key><string>$(x "$SIM_UDID")</string>

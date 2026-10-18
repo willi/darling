@@ -9,7 +9,9 @@
  * exits with its status.
  *
  * Like CoreSimulator, this talks to launchd_sim through the runtime's host library, liblaunch_sim.dylib, whose
- * launch_sim_* functions look the device up by its launchd name in the host's bootstrap namespace.
+ * launch_sim_* functions look the device up by its launchd name in the host's bootstrap namespace. launchd_sim takes
+ * the request only from a caller whose euid is its own uid, so run simspawn as the device's user (SIM_UID; through
+ * simasuid from root), as CoreSimulator runs as the user who booted the device.
  */
 #include <dlfcn.h>
 #include <limits.h>

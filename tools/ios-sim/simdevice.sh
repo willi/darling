@@ -6,6 +6,11 @@
 : "${SIM_RUNTIME_BUILD_VERSION:=23F77}"
 : "${SIM_UDID:=4C0A1A5E-0000-4000-8000-000000000001}"
 : "${SIM_DEVICE_NAME:=Darling iPhone}"
+# the user and group the device runs as (launchd_sim and everything it starts), as CoreSimulator runs it as the Mac
+# user who boots it: a Mac's first user, 501, in staff, 20 (README.md). SIM_UID=0 SIM_GID=0 run it as root, as
+# Darling's launchd runs its jobs, for debugging.
+: "${SIM_UID:=501}"
+: "${SIM_GID:=20}"
 # the device type (an Xcode .simdevicetype, e.g. iPhone 16's for iPhone17,3) as seen from inside Darling: the model,
 # the screen and the environment below come from it, as CoreSimulator's do, and MobileGestalt reads its capabilities
 # (the screen's shape, the artwork the device uses): UIKit can't lay out a screen without them. None: no
