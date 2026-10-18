@@ -148,6 +148,41 @@ static int finds(fsid_t fsid, uint64_t fileid, const char* path)
 	return 1;
 }
 
+// the first regular file getattrlistbulk() lists in dir whose device isn't the directory's (an overlay's lower file),
+// with the volume and file IDs it handed out: 0, or -1
+static int bulk_file(const char* dir, char* path, fsid_t* fsid, uint64_t* fileid)
+{
+	struct attrlist al = { .bitmapcount = ATTR_BIT_MAP_COUNT,
+		.commonattr = ATTR_CMN_RETURNED_ATTRS | ATTR_CMN_NAME | ATTR_CMN_FSID | ATTR_CMN_FILEID };
+	static char buf[65536];
+	struct stat dir_st, st;
+	int fd = open(dir, O_RDONLY | O_DIRECTORY), found = -1, n;
+
+	if (fd < 0 || lstat(dir, &dir_st) != 0)
+		return -1;
+	while (found < 0 && (n = getattrlistbulk(fd, &al, buf, sizeof(buf), 0)) > 0)
+	{
+		char* e = buf;
+		for (int i = 0; i < n && found < 0; i++)
+		{
+			uint32_t length;
+			attrreference_t name;
+			memcpy(&length, e, sizeof(length));
+			// length, attribute_set_t, then the name's reference, the fsid and the file ID, packed
+			char* p = e + sizeof(uint32_t) + sizeof(attribute_set_t);
+			memcpy(&name, p, sizeof(name));
+			memcpy(fsid, p + sizeof(name), sizeof(*fsid));
+			memcpy(fileid, p + sizeof(name) + sizeof(*fsid), sizeof(*fileid));
+			snprintf(path, PATH_MAX, "%s/%s", dir, p + name.attr_dataoffset);
+			if (lstat(path, &st) == 0 && S_ISREG(st.st_mode) && st.st_dev != dir_st.st_dev && st.st_ino == *fileid)
+				found = 0;
+			e += length;
+		}
+	}
+	close(fd);
+	return found;
+}
+
 static int fails_with(ssize_t n, int err)
 {
 	if (n >= 0 || errno != err)
@@ -236,6 +271,15 @@ int main(void)
 			else
 				check(path_from_id(d) == 0, "Linux's root, an overlay whose files report its layers' devices, doesn't claim PATH_FROM_ID");
 		}
+	}
+
+	// getattrlistbulk() hands out IDs (CFURL's enumerators, LaunchServices' bundle scans), which fsgetpath() then finds:
+	// for a file of the prefix's lower layer, whose device no mount is of, only by that
+	{
+		char path[PATH_MAX];
+		if (path_from_id("/usr/lib/system") == 0)
+			check(bulk_file("/usr/lib/system", path, &fsid, &fileid) == 0 && finds(fsid, fileid, path),
+				"a file getattrlistbulk() listed, on a volume no search finds it on");
 	}
 
 	snprintf(dir, sizeof(dir), "%s/fsgetpath.XXXXXX", base);
