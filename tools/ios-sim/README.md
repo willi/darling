@@ -54,6 +54,11 @@ RunningBoard puts in its job.
 `simboot.sh` needs umask 022 (or one that also keeps group and others from writing): `launchctl` skips job plists that
 group or others can write. A `darling shell` has `launchd`'s umask, which `darling` starts with at least 022.
 `launchd_sim` logs to `/private/var/tmp/com.apple.CoreSimulator.SimDevice.<udid>/launchd.log`.
+`simboot.sh` waits up to `SIM_BOOT_TIMEOUT` seconds (60) for the device to boot: `launchd_sim` out of bootstrap mode,
+and `simiokitd` registered in it. It exits 0 once it has, 75 if `launchd_sim` was still in bootstrap mode when the wait
+ran out (a slow host), and 1 for anything else, with what is missing on its last line. Scripts that need the state as
+a word source `simdevice.sh` and call `sim_boot_state`, which sets `SIM_BOOT_STATE` to `booted`, `bootstrap`,
+`iokit-not-started` or `iokit-unregistered`.
 The device runs as `SIM_UID` and `SIM_GID` (501 and 20 by default, a Mac's first user and its staff group):
 CoreSimulator submits the job to the domain of the user who boots the device, so `launchd_sim` and everything it
 starts run as that user, never as root. Darling's `launchd` runs its jobs as root, so `simboot.sh` starts the
@@ -90,7 +95,8 @@ device type says; `SIM_EXTRA_ENVIRONMENT` adds `NAME=VALUE` words to the environ
 `simboot.sh` also starts `simiokitd` beside the device: a Mac's simulator processes reach the host kernel's IOKit, and
 Darling has none, so `simiokitd` serves `com.apple.iokitsimd` in the device (the runtime's IOKit looks it up when
 `IOS_SIMULATOR_IOKITSIMD=1`) with the registry's root and `IOPMrootDomain`, which `backboardd` and SpringBoard open,
-and `kIOReturnUnsupported` for the rest. Its log is the device's `Library/Logs/simiokitd.log`.
+and `kIOReturnUnsupported` for the rest. Its log is the device's `Library/Logs/simiokitd.log`. It tries to register for
+`SIM_BOOT_TIMEOUT` seconds, as long as `simboot.sh` waits; `launchd` doesn't start it again.
 
 `siminstall.m` installs an app as `simctl install` does (installd, through MobileInstallation's `MIInstallerClient`;
 LaunchServices refuses to install on iOS) and opens it as `simctl launch` does (SpringBoard). Build it for the

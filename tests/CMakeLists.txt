@@ -52,5 +52,14 @@ darling_test(thread_signal_stack)
 darling_test(workq_create_fails)
 darling_test(host_thread_signal)
 darling_test(fsgetpath)
+darling_test(dserver_bad_push)
+# it speaks darlingserver's protocol
+target_include_directories(dserver_bad_push PRIVATE ${CMAKE_BINARY_DIR}/src/external/darlingserver/include)
+add_dependencies(dserver_bad_push generate_dserver_rpc_wrappers)
+darling_test(spawn_signals)
+darling_test(kprintf_cost)
+# it asks darlingserver itself whether kprintf strings are logged
+target_include_directories(kprintf_cost PRIVATE ${CMAKE_BINARY_DIR}/src/external/darlingserver/include)
+add_dependencies(kprintf_cost generate_dserver_rpc_wrappers)
 
 install(PROGRAMS run-all.sh DESTINATION libexec/darling/usr/libexec/darling-tests)

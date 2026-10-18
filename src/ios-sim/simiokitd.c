@@ -17,6 +17,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <unistd.h>
 #include <mach/mach.h>
 #include <IOKit/IOReturn.h>
@@ -25,7 +26,7 @@
 
 #define DEFAULT_UDID "4C0A1A5E-0000-4000-8000-000000000001"
 #define SERVICE_NAME "com.apple.iokitsimd"
-// how long to wait for the device's launchd_sim to come up and take the endpoint
+// how long to wait for the device's launchd_sim to come up and take the endpoint, without simboot.sh's SIM_BOOT_TIMEOUT
 #define REGISTER_TIMEOUT_SECONDS 60
 
 typedef int (*launch_sim_register_endpoint_f)(const char* launchd_name, const char* service_name, mach_port_t port);
@@ -276,14 +277,44 @@ kern_return_t is_io_service_add_interest_notification_64(mach_port_t service, io
 	return add_interest_notification(service, wake_port, notification);
 }
 
+// how long to keep trying to register, in ms: simboot.sh's SIM_BOOT_TIMEOUT, which it passes in this job's
+// environment, so the device gets as long as simboot.sh waits for it (launchd doesn't start this again)
+static long long register_timeout_ms(void)
+{
+	const char* s = getenv("SIM_BOOT_TIMEOUT");
+	char* end;
+	long long t;
+
+	if (s == NULL || *s == '\0')
+		return REGISTER_TIMEOUT_SECONDS * 1000LL;
+	t = strtoll(s, &end, 10);
+	return (*end != '\0' || t <= 0 || t > 9999999999LL) ? REGISTER_TIMEOUT_SECONDS * 1000LL : t * 1000;
+}
+
+// the ms one try counts for, since *prev (then now): at least its 100 ms sleep and at most 30 s, as simdevice.sh's
+// sim_waited counts simboot.sh's passes, so the clock jumping (Darling's CLOCK_MONOTONIC is the time of day) neither
+// ends the tries at once nor stretches them
+static long long register_try_ms(long long* prev)
+{
+	struct timespec ts;
+	long long now, ms;
+
+	clock_gettime(CLOCK_MONOTONIC, &ts);
+	now = ts.tv_sec * 1000LL + ts.tv_nsec / 1000000;
+	ms = now - *prev;
+	*prev = now;
+	return ms < 100 ? 100 : ms > 30000 ? 30000 : ms;
+}
+
 static int register_endpoint(mach_port_t port)
 {
 	const char* root_path = getenv("SIM_RUNTIME_ROOT");
 	const char* udid = getenv("SIM_UDID");
 	launch_sim_register_endpoint_f register_endpoint;
 	char lib[PATH_MAX], name[128];
+	long long timeout_ms, tried_ms = 0, prev = 0;
 	void* handle;
-	int i, err;
+	int err;
 
 	if (root_path == NULL)
 	{
@@ -307,16 +338,21 @@ static int register_endpoint(mach_port_t port)
 	}
 
 	// simboot.sh starts this along with the device, whose launchd_sim checks in a little later
-	for (i = 0; i < REGISTER_TIMEOUT_SECONDS * 10; i++)
+	timeout_ms = register_timeout_ms();
+	register_try_ms(&prev);
+	for (;;)
 	{
 		err = register_endpoint(name, SERVICE_NAME, port);
 		if (err == 0)
 		{
-			// simboot.sh waits for this line before it calls the device booted
+			// simdevice.sh's SIM_IOKIT_REGISTERED: simboot.sh waits for this line before it calls the device booted
 			fprintf(stderr, "simiokitd: registered %s in %s\n", SERVICE_NAME, name);
 			return 0;
 		}
+		if (tried_ms >= timeout_ms)
+			break;
 		usleep(100 * 1000);
+		tried_ms += register_try_ms(&prev);
 	}
 	fprintf(stderr, "simiokitd: launch_sim_register_endpoint(%s, %s): %d (%s); is the device booted?\n", name,
 		SERVICE_NAME, err, mach_error_string(err));
