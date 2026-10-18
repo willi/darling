@@ -22,10 +22,10 @@ fi
 
 # It returns once launchd_sim has exited, and exits 0 even when it failed: the job going away is what counts.
 launchctl unload "$SIM_DEVICE_JOB" &
-i=0
+# in seconds, not passes, as simboot.sh's
+end=$(($(date +%s) + SIM_SHUTDOWN_TIMEOUT))
 while launchctl list "$SIM_DEVICE_JOB_LABEL" >/dev/null 2>&1; do
-	i=$((i + 1))
-	if [ "$i" -gt "$SIM_SHUTDOWN_TIMEOUT" ]; then
+	if [ "$(date +%s)" -ge "$end" ]; then
 		echo "$SIM_DEVICE_JOB_LABEL didn't shut down in ${SIM_SHUTDOWN_TIMEOUT}s; see $SIM_DEVICE_LOG" >&2
 		exit 1
 	fi

@@ -175,12 +175,21 @@ launchctl load "$JOB"
 launchctl load "$SIM_IOKIT_JOB"
 
 # booted once launchd_sim has left bootstrap mode and simiokitd has registered the device's IOKit in it (a daemon that
-# asks IOKit before then gets no answer)
-i=0
+# asks IOKit before then gets no answer). The timeout is in seconds, not passes: each grep is a process start, which a
+# loaded host makes slow.
+end=$(($(date +%s) + SIM_BOOT_TIMEOUT))
 until grep -qF "$SIM_DEVICE_BOOTED" "$LOG" 2>/dev/null && grep -qF "simiokitd: registered" "$IOKIT_LOG" 2>/dev/null; do
-	i=$((i + 1))
-	if [ "$i" -gt "$SIM_BOOT_TIMEOUT" ]; then
+	if [ "$(date +%s)" -ge "$end" ]; then
 		echo "$NAME didn't finish booting in ${SIM_BOOT_TIMEOUT}s; see $LOG, $D/Library/Logs/launchd_sim.log and $IOKIT_LOG" >&2
+		# which half is missing (simiokitd's log is made when launchd starts it: it was removed above)
+		if ! grep -qF "$SIM_DEVICE_BOOTED" "$LOG" 2>/dev/null; then
+			echo "launchd_sim didn't leave bootstrap mode" >&2
+		elif [ ! -e "$IOKIT_LOG" ]; then
+			echo "launchd_sim is up, but launchd never started simiokitd ($SIM_IOKIT_JOB_LABEL:" \
+				"$(launchctl list "$SIM_IOKIT_JOB_LABEL" 2>&1 | grep -o '"LastExitStatus" = [0-9-]*' || echo not loaded))" >&2
+		else
+			echo "launchd_sim is up, but simiokitd never registered the device's IOKit (simiokitd.log: $(tail -1 "$IOKIT_LOG"))" >&2
+		fi
 		echo "simshutdown.sh stops it" >&2
 		exit 1
 	fi
