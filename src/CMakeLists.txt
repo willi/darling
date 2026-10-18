@@ -489,6 +489,6 @@ endif()
 
 #add_subdirectory(external/WebCore)
 
-if (ENABLE_TESTS)
+if (ENABLE_TESTS OR ENABLE_PREFIX_TESTS)
 	add_subdirectory(${CMAKE_SOURCE_DIR}/tests ${CMAKE_BINARY_DIR}/tests)
 endif()
