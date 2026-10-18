@@ -51,5 +51,6 @@ darling_test(thread_create_fails)
 darling_test(thread_signal_stack)
 darling_test(workq_create_fails)
 darling_test(host_thread_signal)
+darling_test(fsgetpath)
 
 install(PROGRAMS run-all.sh DESTINATION libexec/darling/usr/libexec/darling-tests)

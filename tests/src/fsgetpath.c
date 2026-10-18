@@ -1,0 +1,217 @@
+// fsgetpath() finds an object by its volume and file ID, as XNU's does, and getattrlist() says so (VOL_CAP_FMT_PATH_FROM_ID).
+// Darling's used to fail with ENOTSUP and leave PATH_FROM_ID off: CFURL then had no _kCFURLFileIDKey for any file,
+// LaunchServices registered every app as a placeholder with no SDK version, and SpringBoard ran each in a 375x667
+// compatibility mode.
+//
+// The objects are made on a volume that isn't an overlay (fsgetpath() can't search an overlay, whose files are on its
+// layers' devices): $FSGETPATH_TEST_DIR, or Linux's /root, a tmpfs in a taffy container. The prefix itself is an
+// overlay, which must not claim PATH_FROM_ID.
+//
+// Prints one "ok"/"not ok" line per check; the exit status is the number of failed checks.
+
+#include <errno.h>
+#include <fcntl.h>
+#include <limits.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/attr.h>
+#include <sys/fsgetpath.h>
+#include <sys/mount.h>
+#include <sys/stat.h>
+#include <sys/wait.h>
+#include <unistd.h>
+
+extern ssize_t fsgetpath_ext(char*, size_t, fsid_t*, uint64_t, uint32_t);
+
+#ifndef FSOPT_NOFIRMLINKPATH
+#	define FSOPT_NOFIRMLINKPATH 0x00000080
+#endif
+
+static int failures;
+
+static void check(int ok, const char* what)
+{
+	printf("%s - %s\n", ok ? "ok" : "not ok", what);
+	if (!ok)
+		failures++;
+}
+
+struct caps_buf
+{
+	uint32_t length;
+	vol_capabilities_attr_t caps;
+} __attribute__((packed));
+
+// whether the volume path is on says it can find a path from an ID (-1: getattrlist() failed)
+static int path_from_id(const char* path)
+{
+	struct statfs fs;
+	struct attrlist al = { .bitmapcount = ATTR_BIT_MAP_COUNT, .volattr = ATTR_VOL_INFO | ATTR_VOL_CAPABILITIES };
+	struct caps_buf b;
+
+	if (statfs(path, &fs) != 0 || getattrlist(fs.f_mntonname, &al, &b, sizeof(b), 0) != 0)
+		return -1;
+	uint32_t f = b.caps.capabilities[VOL_CAPABILITIES_FORMAT], v = b.caps.valid[VOL_CAPABILITIES_FORMAT];
+	return (v & VOL_CAP_FMT_PATH_FROM_ID) && (f & VOL_CAP_FMT_PATH_FROM_ID);
+}
+
+struct id_buf
+{
+	uint32_t length;
+	fsid_t fsid;
+	uint64_t fileid;
+} __attribute__((packed));
+
+// the object's volume and file ID, as getattrlist() hands them out
+static int ids(const char* path, fsid_t* fsid, uint64_t* fileid)
+{
+	struct attrlist al = { .bitmapcount = ATTR_BIT_MAP_COUNT, .commonattr = ATTR_CMN_FSID | ATTR_CMN_FILEID };
+	struct id_buf b;
+
+	if (getattrlist(path, &al, &b, sizeof(b), FSOPT_NOFOLLOW) != 0)
+		return -1;
+	*fsid = b.fsid;
+	*fileid = b.fileid;
+	return 0;
+}
+
+// the same, looked up by another process: this one never looked the object up, so fsgetpath() has to search
+static int ids_elsewhere(const char* path, fsid_t* fsid, uint64_t* fileid)
+{
+	int fds[2];
+	struct id_buf b = { 0 };
+
+	if (pipe(fds) != 0)
+		return -1;
+	pid_t pid = fork();
+	if (pid == 0)
+	{
+		fsid_t f;
+		uint64_t id;
+		close(fds[0]);
+		b.length = ids(path, &f, &id) == 0;
+		b.fsid = f;
+		b.fileid = id;
+		write(fds[1], &b, sizeof(b));
+		_exit(0);
+	}
+	close(fds[1]);
+	ssize_t n = read(fds[0], &b, sizeof(b));
+	close(fds[0]);
+	waitpid(pid, NULL, 0);
+	if (n != sizeof(b) || !b.length)
+		return -1;
+	*fsid = b.fsid;
+	*fileid = b.fileid;
+	return 0;
+}
+
+// whether fsgetpath() names path, and returns the length of what it wrote, its NUL counted
+static int finds(fsid_t fsid, uint64_t fileid, const char* path)
+{
+	char got[PATH_MAX];
+	memset(got, 'x', sizeof(got));
+	ssize_t n = fsgetpath(got, sizeof(got), &fsid, fileid);
+	if (n < 0)
+	{
+		printf("# fsgetpath: %s (want %s)\n", strerror(errno), path);
+		return 0;
+	}
+	if (n != (ssize_t) strlen(path) + 1 || strcmp(got, path) != 0)
+	{
+		printf("# fsgetpath: %zd \"%.*s\" (want %s)\n", n, (int) (n > 0 ? n : 0), got, path);
+		return 0;
+	}
+	return 1;
+}
+
+static int fails_with(ssize_t n, int err)
+{
+	if (n >= 0 || errno != err)
+	{
+		printf("# got %zd, errno %d (want errno %d)\n", n, n < 0 ? errno : 0, err);
+		return 0;
+	}
+	return 1;
+}
+
+int main(void)
+{
+	const char* base = getenv("FSGETPATH_TEST_DIR") ? getenv("FSGETPATH_TEST_DIR") : "/Volumes/SystemRoot/root";
+	char dir[PATH_MAX], real[PATH_MAX], sub[PATH_MAX], file[PATH_MAX], link_[PATH_MAX], moved[PATH_MAX], gone[PATH_MAX];
+	struct statfs fs;
+	fsid_t fsid;
+	uint64_t fileid;
+
+	check(path_from_id("/private/tmp") == 0, "the prefix, an overlay, doesn't claim PATH_FROM_ID");
+
+	snprintf(dir, sizeof(dir), "%s/fsgetpath.XXXXXX", base);
+	if (!mkdtemp(dir) || !realpath(dir, real) || statfs(real, &fs) != 0 || strcmp(fs.f_fstypename, "overlay") == 0)
+	{
+		check(0, "a directory to test in, on a volume that isn't an overlay (set FSGETPATH_TEST_DIR)");
+		return failures;
+	}
+	snprintf(file, sizeof(file), "%s/a/b/file", real);
+	snprintf(link_, sizeof(link_), "%s/link", real);
+	snprintf(moved, sizeof(moved), "%s/a/moved", real);
+	snprintf(gone, sizeof(gone), "%s/gone", real);
+	snprintf(sub, sizeof(sub), "%s/a", real);
+	mkdir(sub, 0755);
+	snprintf(sub, sizeof(sub), "%s/a/b", real);
+	mkdir(sub, 0755);
+	close(open(file, O_CREAT | O_WRONLY, 0644));
+
+	check(path_from_id(real) == 1, "a volume that isn't an overlay claims PATH_FROM_ID");
+
+	// the volume's root: object ID 2, as XNU's VFS_ROOT()
+	check(ids(real, &fsid, &fileid) == 0, "getattrlist() hands out the volume and file IDs");
+	check(finds(fsid, 2, fs.f_mntonname), "object ID 2 is the volume's root");
+
+	// a nested file this process never looked up: found by searching
+	check(ids_elsewhere(file, &fsid, &fileid) == 0 && finds(fsid, fileid, file), "a nested file, by searching");
+	// and once looked up: by that lookup
+	check(ids(file, &fsid, &fileid) == 0 && finds(fsid, fileid, file), "a nested file, after a lookup");
+
+	// a remembered lookup that no longer leads to the object is searched past
+	rename(file, moved);
+	check(finds(fsid, fileid, moved), "a moved file, at its new path");
+
+	// a hard link: either of its names
+	{
+		char got[PATH_MAX];
+		check(link(moved, link_) == 0, "a hard link");
+		check(ids_elsewhere(link_, &fsid, &fileid) == 0, "a hard link's IDs");
+		ssize_t n = fsgetpath(got, sizeof(got), &fsid, fileid);
+		check(n > 0 && (strcmp(got, moved) == 0 || strcmp(got, link_) == 0), "a hard link, by one of its names");
+	}
+
+	// errors, in XNU's order
+	{
+		char small[8];
+		check(ids(moved, &fsid, &fileid) == 0, "IDs for the errors");
+		check(fails_with(fsgetpath(small, sizeof(small), &fsid, fileid), ENOSPC), "a buffer the path doesn't fit: ENOSPC");
+		char big[8192];
+		check(fails_with(fsgetpath(big, 0, &fsid, fileid), EINVAL), "a buffer of 0: EINVAL");
+		check(fails_with(fsgetpath(big, sizeof(big), &fsid, fileid), EINVAL), "a buffer of more than a page: EINVAL");
+		check(fails_with(fsgetpath_ext(big, PATH_MAX, &fsid, fileid, 0x1), EINVAL), "an unknown option: EINVAL");
+		check(fsgetpath_ext(big, PATH_MAX, &fsid, fileid, FSOPT_NOFIRMLINKPATH) > 0, "fsgetpath_ext(FSOPT_NOFIRMLINKPATH)");
+
+		close(open(gone, O_CREAT | O_WRONLY, 0644));
+		check(ids(gone, &fsid, &fileid) == 0, "a removed file's IDs");
+		unlink(gone);
+		check(fails_with(fsgetpath(big, PATH_MAX, &fsid, fileid), ENOENT), "a removed file: ENOENT");
+
+		fsid_t none = { { 0x7ffffff0, 0 } };
+		check(fails_with(fsgetpath(big, PATH_MAX, &none, 2), ENOTSUP), "a volume ID no volume has: ENOTSUP");
+	}
+
+	unlink(moved);
+	unlink(link_);
+	rmdir(sub);
+	snprintf(sub, sizeof(sub), "%s/a", real);
+	rmdir(sub);
+	rmdir(real);
+	return failures;
+}
