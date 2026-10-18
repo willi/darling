@@ -167,6 +167,7 @@ cat >"$SIM_IOKIT_JOB" <<EOF
 <key>EnvironmentVariables</key><dict>
 <key>SIM_RUNTIME_ROOT</key><string>$(x "$R")</string>
 <key>SIM_UDID</key><string>$(x "$SIM_UDID")</string>
+<key>SIM_BOOT_TIMEOUT</key><string>$(x "$SIM_BOOT_TIMEOUT")</string>
 </dict>
 <key>RunAtLoad</key><true/>
 <key>StandardErrorPath</key><string>$(x "$SIM_IOKIT_LOG")</string>
@@ -181,10 +182,25 @@ launchctl load "$SIM_IOKIT_JOB"
 # asks IOKit before then gets no answer). The timeout is in seconds, not passes: each grep is a process start, which a
 # loaded host makes slow.
 sim_wait_start
+gone=0
 while :; do
 	# one look at each half, for the wait and for what a timeout says is missing (the log is removed above)
 	sim_boot_state
 	[ "$SIM_BOOT_STATE" = booted ] && break
+	# simiokitd tries for SIM_BOOT_TIMEOUT too, and launchd doesn't start it again: once it has exited without
+	# registering (no PID, twice: launchd makes its log before it notes the PID), no wait brings the IOKit
+	if [ "$SIM_BOOT_STATE" = iokit-unregistered ] && ! launchctl list "$SIM_IOKIT_JOB_LABEL" 2>/dev/null | grep -q '"PID" = '; then
+		gone=$((gone + 1))
+	else
+		gone=0
+	fi
+	if [ "$gone" -ge 2 ]; then
+		echo "$NAME didn't finish booting; see $LOG, $D/Library/Logs/launchd_sim.log and $SIM_IOKIT_LOG" >&2
+		echo "launchd_sim is up, but simiokitd exited without registering the device's IOKit" \
+			"(simiokitd.log: ${SIM_IOKIT_LAST:-empty})" >&2
+		echo "simshutdown.sh stops it" >&2
+		exit 1
+	fi
 	if [ "$SIM_WAITED" -gt "$SIM_BOOT_TIMEOUT" ]; then
 		echo "$NAME didn't finish booting in ${SIM_BOOT_TIMEOUT}s; see $LOG, $D/Library/Logs/launchd_sim.log and $SIM_IOKIT_LOG" >&2
 		case $SIM_BOOT_STATE in
