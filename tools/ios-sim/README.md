@@ -90,7 +90,9 @@ LaunchServices registers the runtime's apps): `SIM_DAEMONS=all`, or at least `cf
 `/Library/Developer/CoreSimulator/Profiles/DeviceTypes`). As CoreSimulator does, the device takes its model, its
 screen and the profile's environment from it, and its capabilities tell MobileGestalt the screen's shape, without
 which UIKit can't lay an app's window out. `SIM_MODEL_IDENTIFIER`, `SIM_SCREEN_*` and the rest override what the
-device type says; `SIM_EXTRA_ENVIRONMENT` adds `NAME=VALUE` words to the environment of the device's processes.
+device type says; `SIM_EXTRA_ENVIRONMENT` adds `NAME=VALUE` words to the environment of the device's processes. They
+go into `Child`, so they override a job's own variables: an extra `HOME`, `CFFIXED_USER_HOME` or `TMPDIR` replaces an
+app's data container's too.
 
 `simboot.sh` also starts `simiokitd` beside the device: a Mac's simulator processes reach the host kernel's IOKit, and
 Darling has none, so `simiokitd` serves `com.apple.iokitsimd` in the device (the runtime's IOKit looks it up when

@@ -10,9 +10,10 @@
 # SIM_DAEMONS lists the runtime's LaunchDaemons the device loads (labels; default: cfprefsd, and logd with its
 # helper; "all": every one, as CoreSimulator loads them). launchd_sim starts each when a client first looks it up, or at
 # load if it says so. SIM_EXTRA_ENVIRONMENT adds NAME=VALUE pairs (space-separated) to the environment of the device's
-# launchd_sim and its jobs. SIM_UID and SIM_GID are the user and group the device runs as: launchd_sim, and every
-# process it starts (README.md). SIM_BOOT_TIMEOUT is how long to wait for the boot, in seconds (default: 60). The
-# device's other variables are in simdevice.sh.
+# launchd_sim and its jobs. They go into Child, which launchd_sim sets over each job's own variables: an extra HOME,
+# say, replaces an app's data container too. SIM_UID and SIM_GID are the user and group the device runs as:
+# launchd_sim, and every process it starts (README.md). SIM_BOOT_TIMEOUT is how long to wait for the boot, in seconds
+# (default: 60). The device's other variables are in simdevice.sh.
 #
 # It exits 0 once the device is booted (simdevice.sh's sim_boot_state says booted), 75 when the wait ran out with
 # launchd_sim still in bootstrap mode (a slow host: a longer SIM_BOOT_TIMEOUT may do), and 1 for any other failure; the
@@ -130,13 +131,14 @@ EOF
 rm -f "$D/var/run/launchd_bootstrap.plist" "$JOB" "$SIM_IOKIT_JOB"
 
 # launchd_sim reads everything but the environments from inside the Bootstrap dictionary too: with Paths at the top
-# level, it loads no jobs
+# level, it loads no jobs. In Self, Child comes after the defaults: a plist key given twice (an extra HOME) has its last
+# value, so an extra is launchd_sim's own as it is its jobs'
 cat >"$D/var/run/launchd_bootstrap.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
 <key>Bootstrap</key><dict>
-<key>Self</key><dict>$(env_child)$(env_defaults)</dict>
+<key>Self</key><dict>$(env_defaults)$(env_child)</dict>
 <key>Child</key><dict>$(env_child)</dict>
 <key>ChildDefaults</key><dict>$(env_defaults)</dict>
 <key>Paths</key><array><string>$(x "$D/var/run/LaunchDaemons")</string></array>
