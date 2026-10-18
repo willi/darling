@@ -22,6 +22,7 @@
 #include <sys/mount.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
+#include <time.h>
 #include <unistd.h>
 
 extern ssize_t fsgetpath_ext(char*, size_t, fsid_t*, uint64_t, uint32_t);
@@ -315,7 +316,13 @@ int main(void)
 		close(open(gone, O_CREAT | O_WRONLY, 0644));
 		check(ids(gone, &fsid, &fileid) == 0, "a removed file's IDs");
 		unlink(gone);
+		struct timespec t0, t1;
+		clock_gettime(CLOCK_MONOTONIC, &t0);
 		check(fails_with(fsgetpath(big, PATH_MAX, &fsid, fileid), ENOENT), "a removed file: ENOENT");
+		clock_gettime(CLOCK_MONOTONIC, &t1);
+		// what the volume's search costs when it can't be skipped (on ext4 as root, open_by_handle_at() skips it)
+		printf("# ENOENT in %ld ms\n", (long) ((t1.tv_sec - t0.tv_sec) * 1000 + (t1.tv_nsec - t0.tv_nsec) / 1000000));
+		check(fails_with(fsgetpath(big, PATH_MAX, &fsid, fileid), ENOENT), "the removed file again: ENOENT");
 
 		fsid_t none = { { 0x7ffffff0, 0 } };
 		check(fails_with(fsgetpath(big, PATH_MAX, &none, 2), ENOTSUP), "a volume ID no volume has: ENOTSUP");
