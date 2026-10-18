@@ -83,6 +83,8 @@ int main(void)
 		return 1;
 	}
 
+	// Before this process starts any thread: glibc keeps the stacks of threads that have ended for its next ones, and
+	// a fork child inherits them, so a cached 8 MiB stack would let the child's thread start under the limit.
 	pid_t pid = fork();
 	if (pid == 0)
 	{
