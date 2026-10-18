@@ -82,8 +82,10 @@ x() {
 }
 
 # the directory of the device's dyld shared cache, as CoreSimulator names it: the runtime's cache for the host's macOS
-# build (sw_vers's; Darling's is "Darling"). Darling builds no cache there, and dyld_sim then runs without one: with
-# DYLD_SHARED_CACHE_DIR set, it looks nowhere else (dyld's CacheFinder)
+# build (sw_vers's; Darling's is "Darling"). dyld_sim takes a cache from the runtime root's own
+# System/Library/Caches/com.apple.dyld first, then from this directory, and with this set never from the prefix's
+# /System/Library/Caches (dyld's CacheFinder). Darling builds no cache here, so a device has one only if its runtime
+# root carries one
 : "${SIM_DYLD_SHARED_CACHE_DIR:=/Library/Developer/CoreSimulator/Caches/dyld/$(sw_vers -buildVersion)/$SIM_RUNTIME_IDENTIFIER.$SIM_RUNTIME_BUILD_VERSION/}"
 
 # the environments CoreSimulator gives launchd_sim's jobs. "Child" is this one: launchd_sim sets it over a job's own
