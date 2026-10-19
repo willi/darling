@@ -12,7 +12,7 @@ if [ -z "${SIM_RUNTIME_IDENTIFIER:-}" ]; then
 		SIM_RUNTIME_IDENTIFIER=$(/usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" \
 			"$SIM_RUNTIME_ROOT/../../Info.plist" 2>/dev/null) || SIM_RUNTIME_IDENTIFIER=
 	fi
-	if [ -z "$SIM_RUNTIME_IDENTIFIER" ]; then
+	if [ -z "${SIM_RUNTIME_IDENTIFIER:-}" ]; then
 		sim_minor=0
 		case $SIM_RUNTIME_VERSION in
 		*.*)
