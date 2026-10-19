@@ -64,6 +64,12 @@ int main(void)
 		// the main thread exits, the process goes on
 		pthread_exit(NULL);
 	}
+	if (child < 0)
+	{
+		// nothing to allocate into, and a kill(-1) below would signal every process the test may
+		printf("not ok - fork()\n");
+		return 1;
+	}
 	read(pipefd[0], &byte, 1);
 
 	if (task_for_pid(mach_task_self(), child, &task) != KERN_SUCCESS)
