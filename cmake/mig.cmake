@@ -30,12 +30,19 @@ function(mig defFileName)
         foreach (dir ${InclDirs})
                 set(MIG_FLAGS "${MIG_FLAGS} -I${dir}")
         endforeach()
-
-        # extra migcom options from the caller, e.g. -novouchers
+        # extra options from the caller: migcom's (e.g. -novouchers), or the preprocessor's, which mig.sh hands on to it
         set(MIG_FLAGS "${MIG_FLAGS} ${MIG_EXTRA_FLAGS}")
 
         # message(STATUS "MIG flags: ${MIG_FLAGS}")
         separate_arguments(MIG_FLAGS)
+
+        # the preprocessor's part, for the dependency scan below, as mig.sh gets it
+        set(MIG_CPP_FLAGS "")
+        foreach (flag ${MIG_FLAGS})
+                if (flag MATCHES "^-[DUI]")
+                        list(APPEND MIG_CPP_FLAGS "${flag}")
+                endif()
+        endforeach()
 
         string(REPLACE ".defs" "" relativeName "${defFileName}")
         get_filename_component(bareName "${relativeName}" NAME)
@@ -60,8 +67,37 @@ function(mig defFileName)
 			set(MIG_ARCH_SUFFIX "-${MIG_ARCH}-")
 		endif()
 
+		# A changed .defs file, or one it #includes, regenerates its outputs: the command depends on the file, and
+		# with Ninja on what the preprocessor reads for it too (run as mig.sh runs it, with -I its own directory).
+		# Keep the scan's command in step with mig.sh's cpp line (src/external/bootstrap_cmds/migcom.tproj/mig.sh).
+		# mig.sh's own -MD can't serve: it quotes "${deps}", so with more than one output it writes one depfile named
+		# after all of them.
+		# Without, a build went on with stale stubs (a routine added to mach_exc.defs was undeclared).
+		# A MIG import is copied into the generated C, and the C compiler's own deps track it. Other generators, and
+		# CMake before 3.20 (no CMP0116, so the depfile's paths wouldn't match build.ninja's), get the .defs file only.
+		set(MIG_OUTPUT_PRIMARY "${CMAKE_CURRENT_BINARY_DIR}/${relativeName}${MIG_ARCH_SUFFIX}${MIG_USER_SOURCE_SUFFIX}")
+		set(MIG_DEPFILE_ARGS "")
+		set(MIG_DEPSCAN_COMMAND "")
+		if (CMAKE_GENERATOR MATCHES "Ninja" AND POLICY CMP0116)
+			# named after the command's first output, not the .defs file: libsyscall runs mig() twice on some .defs
+			# files (mach_port.defs, with and without _internal), and a shared name let one command's depfile name
+			# the other's output, which kept the edge dirty (mig ran again on every build)
+			set(MIG_DEPFILE "${MIG_OUTPUT_PRIMARY}.d")
+			set(MIG_DEPFILE_ARGS DEPFILE ${MIG_DEPFILE})
+			set(MIG_DEPSCAN_COMMAND COMMAND
+				${CMAKE_C_COMPILER} -x c -M -MG -MT ${MIG_OUTPUT_PRIMARY} -MF ${MIG_DEPFILE}
+				-arch ${MIG_ARCH} -target ${MIG_TARGET_TRIPLET_PRIMARY} -D__MACH30__
+				${MIG_CPP_FLAGS} -I ${CMAKE_CURRENT_SOURCE_DIR}/${dirName}
+				${CMAKE_CURRENT_SOURCE_DIR}/${defFileName})
+		endif()
+
+		# CMake (3.20 on) names the depfile's absolute paths as build.ninja does
+		cmake_policy(PUSH)
+		if (POLICY CMP0116)
+			cmake_policy(SET CMP0116 NEW)
+		endif()
 		add_custom_command(OUTPUT
-			${CMAKE_CURRENT_BINARY_DIR}/${relativeName}${MIG_ARCH_SUFFIX}${MIG_USER_SOURCE_SUFFIX}
+			${MIG_OUTPUT_PRIMARY}
 			${CMAKE_CURRENT_BINARY_DIR}/${relativeName}${MIG_ARCH_SUFFIX}${MIG_USER_HEADER_SUFFIX}
 			${CMAKE_CURRENT_BINARY_DIR}/${relativeName}${MIG_ARCH_SUFFIX}${MIG_SERVER_SOURCE_SUFFIX}
 			${CMAKE_CURRENT_BINARY_DIR}/${relativeName}${MIG_ARCH_SUFFIX}${MIG_SERVER_HEADER_SUFFIX}
@@ -81,9 +117,12 @@ function(mig defFileName)
 				# this is so that the xtrace file is always produced so that the command is not constantly re-run
 				# for MIG definitions that produce no xtrace files
 				touch ${CMAKE_CURRENT_BINARY_DIR}/${relativeName}${MIG_ARCH_SUFFIX}${MIG_XTRACE_SUFFIX}
+			${MIG_DEPSCAN_COMMAND}
 			DEPENDS
-				migexe migcom
+				migexe migcom ${CMAKE_CURRENT_SOURCE_DIR}/${defFileName}
+			${MIG_DEPFILE_ARGS}
 		)
+		cmake_policy(POP)
 
 		if (NOT TARGET ${bareName}_xtrace_mig AND NOT MIG_NO_XTRACE)
 			add_darling_library(${bareName}_xtrace_mig ${CMAKE_CURRENT_BINARY_DIR}/${relativeName}${MIG_ARCH_SUFFIX}${MIG_XTRACE_SUFFIX})

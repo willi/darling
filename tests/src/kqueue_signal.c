@@ -59,6 +59,17 @@ static long wait_signal(int kq, long ms)
 	return -1;
 }
 
+// Waits until the handler has run `count` times in all. A knote records a signal before its handler runs (XNU's
+// when it's sent, Darling's on the thread that takes it), so whatever a signal records is there by then, and one sent
+// next can't merge with it. Delivery may take over a second on a loaded host: a check that gave it a fixed time saw
+// it late, or a later check did.
+static bool wait_handled(int count)
+{
+	for (int i = 0; i < 1000 && handled < count; i++)
+		usleep(10000);
+	return handled >= count;
+}
+
 // takes the process's signals while the checking thread blocks them
 static void* receiver(void* arg)
 {
@@ -93,45 +104,42 @@ static void* run(void* arg)
 	signal(SIG, SIG_IGN);
 	ok = change(kq, EV_ADD);
 	kill(getpid(), SIG);
-	data = wait_signal(kq, 5000);
+	data = wait_signal(kq, 10000);
 	check(ok && data == 1, "an ignored signal another thread takes is recorded", "no event");
 
+	// (from here on, every signal is handled, so each check knows when it has come)
 	signal(SIG, handler);
 	kill(getpid(), SIG);
-	data = wait_signal(kq, 5000);
-	// the knote fires before the handler runs, on the thread that took the signal
-	for (int i = 0; i < 500 && handled == 0; i++)
-		usleep(10000);
-	check(data == 1 && handled == 1, "a handled signal is recorded and handled", "no event, or the handler didn't run");
+	data = wait_signal(kq, 10000);
+	check(data == 1 && wait_handled(1), "a handled signal is recorded and handled", "no event, or the handler didn't run");
 
 	// Each knote watching a signal records it, and deleting one leaves the others.
 	ok = change(kq2, EV_ADD);
 	kill(getpid(), SIG);
-	ok = ok && wait_signal(kq, 5000) == 1 && wait_signal(kq2, 5000) == 1;
+	ok = ok && wait_handled(2) && wait_signal(kq, 10000) == 1 && wait_signal(kq2, 10000) == 1;
 	ok = ok && change(kq2, EV_DELETE);
 	kill(getpid(), SIG);
-	ok = ok && wait_signal(kq, 5000) == 1 && wait_signal(kq2, 200) == -1;
+	ok = ok && wait_handled(3) && wait_signal(kq, 10000) == 1 && wait_signal(kq2, 0) == -1;
 	check(ok, "every knote for a signal records it, until deleted", "a knote missed it, or recorded it after EV_DELETE");
 
 	// Regression: disabling a knote dropped it, so signals that arrived while libdispatch ran a source's handler
 	// (EV_DISPATCH) were lost.
-	signal(SIG, SIG_IGN);
 	ok = change(kq, EV_DELETE) && change(kq, EV_ADD | EV_DISPATCH);
 	kill(getpid(), SIG);
-	ok = ok && wait_signal(kq, 5000) == 1;
-	// apart, or Linux merges the second into the first while it's pending (XNU would count both)
+	ok = ok && wait_handled(4) && wait_signal(kq, 10000) == 1;
+	// one at a time, or Linux merges the second into the first while it's pending (XNU would count both)
 	kill(getpid(), SIG);
-	usleep(100000);
+	ok = ok && wait_handled(5);
 	kill(getpid(), SIG);
-	ok = ok && wait_signal(kq, 200) == -1;
+	ok = ok && wait_handled(6) && wait_signal(kq, 0) == -1;
 	ok = ok && change(kq, EV_ENABLE);
-	data = wait_signal(kq, 5000);
+	data = wait_signal(kq, 10000);
 	snprintf(detail, sizeof(detail), "%ld after EV_ENABLE", data);
 	check(ok && data == 2, "a dispatched knote counts the signal until enabled again", detail);
 
 	ok = change(kq, EV_DELETE);
 	kill(getpid(), SIG);
-	check(ok && wait_signal(kq, 200) == -1, "a deleted knote records nothing", "an event after EV_DELETE");
+	check(ok && wait_handled(7) && wait_signal(kq, 0) == -1, "a deleted knote records nothing", "an event after EV_DELETE");
 
 	// A fork's child doesn't count its signals on its parent's knotes.
 	change(kq, EV_ADD);
