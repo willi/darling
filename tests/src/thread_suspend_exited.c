@@ -11,6 +11,7 @@
 
 #include <dirent.h>
 #include <mach/mach.h>
+#include <mach/mach_error.h>
 #include <pthread.h>
 #include <signal.h>
 #include <stdio.h>
@@ -97,8 +98,16 @@ int main(void)
 	signal(SIGALRM, hung);
 	alarm(60);
 
+	// What XNU answers depends on how far the joined thread's teardown has got (xnu-10002.1.13): running still,
+	// KERN_SUCCESS (or KERN_TERMINATED); its port disabled but the thread not yet freed (ipc_thread_disable(),
+	// osfmk/kern/ipc_tt.c:958), the port converts to THREAD_NULL, which thread_suspend() answers KERN_INVALID_ARGUMENT
+	// (osfmk/kern/thread_act.c:400); reaped (thread_deallocate_complete() -> ipc_thread_terminate(),
+	// osfmk/kern/thread.c:803, deallocates the port, ipc_tt.c:1047), our send right is a dead name and the call fails
+	// with MACH_SEND_INVALID_DEST. Darling's release destroys the thread and its port together: only the last.
 	kr = join_and_suspend();
-	check(kr == KERN_SUCCESS || kr == KERN_TERMINATED, "thread_suspend() of an exited thread returns");
+	printf("# thread_suspend(): %d (%s)\n", kr, mach_error_string(kr));
+	check(kr == KERN_SUCCESS || kr == KERN_TERMINATED || kr == KERN_INVALID_ARGUMENT || kr == MACH_SEND_INVALID_DEST,
+		"thread_suspend() of an exited thread returns");
 
 	// and suspending the task's other threads, as dyld's process scavenger does, comes back
 	kr = task_threads(mach_task_self(), &threads, &count);
