@@ -148,6 +148,8 @@ int main(void)
 		write(pipefd[1], "", 1);
 		pthread_exit(NULL);
 	}
+	// (the child's write end only: a child that dies before writing ends the read)
+	close(pipefd[1]);
 	read(pipefd[0], &byte, 1);
 	if (task_for_pid(mach_task_self(), child, &task) != KERN_SUCCESS)
 	{
