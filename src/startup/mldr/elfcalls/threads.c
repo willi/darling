@@ -445,14 +445,15 @@ int __darling_thread_terminate(void* stackaddr,
 	}
 
 	if (checkout_result < 0) {
-		// failing to check-out is not fatal.
-		// it's not ideal, but it's not fatal.
-		#define CHECKOUT_FAILURE_MESSAGE "Failed to checkout"
-		if (t_server_socket != -1) {
-			dserver_rpc_explicit_kprintf(t_server_socket, CHECKOUT_FAILURE_MESSAGE, sizeof(CHECKOUT_FAILURE_MESSAGE) - 1);
-		} else {
-			dserver_rpc_kprintf(CHECKOUT_FAILURE_MESSAGE, sizeof(CHECKOUT_FAILURE_MESSAGE) - 1);
-		}
+		// Not fatal: the thread ends anyway, and darlingserver drops it with its process. But it's an error, so it goes
+		// to stderr, where it is seen: a kprintf is logged at Info, which darlingserver's default level (Error) drops,
+		// and it would take the same socket that just failed.
+		char msg[160];
+		int len = snprintf(msg, sizeof(msg), "mldr: thread %ld couldn't check out of darlingserver: %d\n",
+			(long) syscall(SYS_gettid), checkout_result);
+
+		if (len > 0)
+			write(STDERR_FILENO, msg, (len < (int) sizeof(msg)) ? len : (int) sizeof(msg) - 1);
 	}
 
 	// close the RPC FD (if necessary)
