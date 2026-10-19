@@ -127,10 +127,10 @@ static void* faulter(void* arg)
 	return NULL;
 }
 
-// Runs a thread that faults with `behavior` set on it, and answers its exception; returns the request's ID
 // what the last fault_and_answer()'s receive returned (MACH_RCV_TIMED_OUT when no exception came in 10 s)
 static mach_msg_return_t receive_mr;
 
+// Runs a thread that faults with `behavior` set on it, and answers its exception; returns the request's ID
 static mach_msg_id_t fault_and_answer(int with_behavior, request_t* request)
 {
 	pthread_t thread;

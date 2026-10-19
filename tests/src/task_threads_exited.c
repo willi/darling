@@ -162,7 +162,8 @@ int main(void)
 			usleep(10000);
 		check(count == 1, "a process whose main thread has exited lists its other thread only");
 	}
-	kill(child, SIGKILL);
+	if (child > 0) // a failed fork() would make this kill(-1): every process the test may signal
+		kill(child, SIGKILL);
 
 	return failures;
 }
