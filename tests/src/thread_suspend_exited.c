@@ -35,14 +35,20 @@ static void* worker(void* arg)
 	return arg;
 }
 
+// write(), not printf(): stdout may be a file, fully buffered, which _exit() drops
 static void hung(int sig)
 {
+	char line[128];
+	int n;
+
 	(void) sig;
 	if (round_now < 0)
-		printf("not ok - thread_suspend() of an exited thread returned within 60 s\n");
+		n = snprintf(line, sizeof(line), "not ok - thread_suspend() of an exited thread returned within 60 s\n");
 	else
-		printf("not ok - thread_suspend() of a just-joined thread returned within 60 s (round %d of %d)\n",
+		n = snprintf(line, sizeof(line),
+			"not ok - thread_suspend() of a just-joined thread returned within 60 s (round %d of %d)\n",
 			round_now, ROUNDS);
+	write(STDOUT_FILENO, line, (n > 0 && n < (int) sizeof(line)) ? n : (int) sizeof(line) - 1);
 	_exit(1);
 }
 
