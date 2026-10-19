@@ -45,7 +45,11 @@ export SIM_RUNTIME_ROOT=...
 
 `simboot.sh` boots the device as CoreSimulator does: a job in Darling's `launchd` runs the runtime's
 `launchd_sim_trampoline`, which hands the device's bootstrap port to `launchd_sim`. The device loads the daemons in
-`SIM_DAEMONS` (`cfprefsd`, `logd` and `logd_helper` by default). `simspawn` passes `SIMCTL_CHILD_*` variables to the program, as
+`SIM_DAEMONS` (`cfprefsd`, `logd` and `logd_helper` by default). With `SIM_DAEMONS=paths` it loads them as CoreSimulator
+does: the bootstrap's `Paths` are every LaunchDaemons and LaunchAngels directory of the runtime root (System, Library,
+AppleInternal, Developer) and of the device's data that exists, and launchd_sim registers every job in them itself,
+with all their services, before it starts any. `SIM_DAEMONS_EXCLUDED` names jobs to leave out, by their plists' file
+names (a few differ from their labels); each directory is given as one of the device's own, with links to the rest. `simspawn` passes `SIMCTL_CHILD_*` variables to the program, as
 `simctl spawn` does; `SIMCTL_CHILD_OS_ACTIVITY_DT_MODE=1` prints its `os_log` messages on stderr.
 The device's `launchd_bootstrap.plist` gives launchd_sim its own environment (`Self`) and two for its jobs: `Child`,
 which launchd_sim sets over a job's own `EnvironmentVariables`, and `ChildDefaults`, which a job's own variables

@@ -8,8 +8,11 @@
 # simshutdown.sh shuts the device down again.
 #
 # SIM_DAEMONS lists the runtime's LaunchDaemons the device loads (labels; default: cfprefsd, and logd with its
-# helper; "all": every one, as CoreSimulator loads them). launchd_sim starts each when a client first looks it up, or at
-# load if it says so. SIM_EXTRA_ENVIRONMENT adds NAME=VALUE pairs (space-separated) to the environment of the device's
+# helper; "all": every one in System/Library/LaunchDaemons). "paths" loads them as CoreSimulator does: launchd_sim gets
+# every LaunchDaemons and LaunchAngels directory of the runtime root and the device's data that exists, and registers
+# every job in them itself, all their services before it starts any job. SIM_DAEMONS_EXCLUDED then names jobs to leave
+# out (labels, as their plists' file names). launchd_sim starts each job when a client first looks it up, or at load if
+# it says so. SIM_EXTRA_ENVIRONMENT adds NAME=VALUE pairs (space-separated) to the environment of the device's
 # launchd_sim and its jobs. They go into Child, which launchd_sim sets over each job's own variables: an extra HOME,
 # say, replaces an app's data container too. SIM_UID and SIM_GID are the user and group the device runs as:
 # launchd_sim, and every process it starts (README.md). SIM_BOOT_TIMEOUT is how long to wait for the boot, in seconds
@@ -25,6 +28,7 @@ set -eu
 # shellcheck source=simdevice.sh
 . "$(dirname "$0")/simdevice.sh"
 : "${SIM_DAEMONS:=com.apple.cfprefsd.xpc.daemon com.apple.logd com.apple.logd_helper}"
+: "${SIM_DAEMONS_EXCLUDED:=}"
 : "${SIM_BOOT_TIMEOUT:=60}"
 sim_check_seconds SIM_BOOT_TIMEOUT "$SIM_BOOT_TIMEOUT"
 
@@ -71,12 +75,47 @@ fi
 
 mkdir -p "$D/tmp" "$D/Library/Logs" "$D/var/run/LaunchDaemons"
 rm -f "$D/var/run/LaunchDaemons/"*.plist
-if [ "$SIM_DAEMONS" = all ]; then
-	SIM_DAEMONS=$(cd "$R/System/Library/LaunchDaemons" && for f in *.plist; do printf '%s ' "${f%.plist}"; done)
+rm -rf "$D/var/run/LaunchPaths"
+# the directories launchd_sim crawls (Bootstrap's Paths), one per line
+paths="$D/var/run/LaunchDaemons"
+if [ "$SIM_DAEMONS" = paths ]; then
+	# CoreSimulator's (SimDevice's launchDaemonsPaths): of each root, its LaunchDaemons and LaunchAngels, those that
+	# exist. Each is given as a directory of the device's own with a link to every plist in it but the excluded, so
+	# that a job can be left out of a directory the runtime owns
+	paths=
+	for root in "$R/System/Library" "$R/Library" "$R/AppleInternal/Library" "$R/Developer/Library" "$D/Library"; do
+		for sub in LaunchDaemons LaunchAngels; do
+			[ -d "$root/$sub" ] || continue
+			if [ "$root" = "$D/Library" ]; then
+				dir="$D/var/run/LaunchPaths/data/Library/$sub"
+			else
+				dir="$D/var/run/LaunchPaths${root#"$R"}/$sub"
+			fi
+			mkdir -p "$dir"
+			for f in "$root/$sub/"*.plist; do
+				[ -e "$f" ] || continue
+				label=${f##*/}
+				label=${label%.plist}
+				case " $SIM_DAEMONS_EXCLUDED " in
+				*" $label "*) continue ;;
+				esac
+				ln -s "$f" "$dir/"
+			done
+			paths="$paths${paths:+
+}$dir"
+		done
+	done
+else
+	if [ "$SIM_DAEMONS" = all ]; then
+		SIM_DAEMONS=$(cd "$R/System/Library/LaunchDaemons" && for f in *.plist; do printf '%s ' "${f%.plist}"; done)
+	fi
+	for label in $SIM_DAEMONS; do
+		ln -s "$R/System/Library/LaunchDaemons/$label.plist" "$D/var/run/LaunchDaemons/"
+	done
 fi
-for label in $SIM_DAEMONS; do
-	ln -s "$R/System/Library/LaunchDaemons/$label.plist" "$D/var/run/LaunchDaemons/"
-done
+
+# when the device boots, as CoreSimulator gives its jobs (SIMULATOR_BOOT_TIME, seconds since 1970)
+boot_time=$(date +%s)
 
 # a value as plist XML text
 x() {
@@ -100,8 +139,9 @@ if [ -z "${SIM_DYLD_SHARED_CACHE_DIR+set}" ]; then
 fi
 
 # the environments CoreSimulator gives launchd_sim's jobs. "Child" is this one: launchd_sim sets it over a job's own
-# EnvironmentVariables. launchd_sim's own environment, "Self", is Child and the defaults below together (a Mac's Self
-# lacks one key of its Child's, VM_KERNEL_PAGE_SIZE_4K, which this Child doesn't set)
+# EnvironmentVariables. launchd_sim's own environment, "Self", is Child and the defaults below together, and
+# LS_ENABLE_BUNDLE_LOCALIZATION_CACHING (a Mac's Self lacks one key of its Child's, VM_KERNEL_PAGE_SIZE_4K, which this
+# Child doesn't set)
 env_child() {
 	cat <<EOF
 <key>DYLD_ROOT_PATH</key><string>$(x "$R")</string>
@@ -124,6 +164,7 @@ env_child() {
 <key>SIMULATOR_MAINSCREEN_SCALE</key><string>$(x "$SIM_SCREEN_SCALE")</string>
 <key>SIMULATOR_MAINSCREEN_PITCH</key><string>$(x "$SIM_SCREEN_PITCH")</string>
 <key>IOS_SIMULATOR_IOKITSIMD</key><string>1</string>
+<key>SIMULATOR_BOOT_TIME</key><string>$boot_time</string>
 EOF
 	for v in $SIM_EXTRA_ENVIRONMENT; do
 		echo "<key>$(x "${v%%=*}")</key><string>$(x "${v#*=}")</string>"
@@ -159,17 +200,29 @@ rm -f "$D/var/run/launchd_bootstrap.plist" "$JOB" "$SIM_IOKIT_JOB"
 # launchd_sim reads everything but the environments from inside the Bootstrap dictionary too: with Paths at the top
 # level, it loads no jobs. In Self, Child comes after the defaults: a plist key given twice (an extra HOME) has its last
 # value, so an extra is launchd_sim's own as it is its jobs'
+# The other keys have the values CoreSimulator gives them (1174, with its defaults); BinaryOrderPreference is the
+# device's first architecture.
 cat >"$D/var/run/launchd_bootstrap.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
 <key>Bootstrap</key><dict>
-<key>Self</key><dict>$(env_defaults)$(env_child)</dict>
+<key>Self</key><dict>$(env_defaults)$(env_child)<key>LS_ENABLE_BUNDLE_LOCALIZATION_CACHING</key><string>1</string></dict>
 <key>Child</key><dict>$(env_child)</dict>
 <key>ChildDefaults</key><dict>$(env_defaults)</dict>
-<key>Paths</key><array><string>$(x "$D/var/run/LaunchDaemons")</string></array>
+<key>Paths</key><array>$(echo "$paths" | while IFS= read -r p; do printf '<string>%s</string>' "$(x "$p")"; done)</array>
 <key>SimulatorRuntimeRoot</key><string>$(x "$R")</string>
+<key>BinaryOrderPreference</key><string>$(x "${SIM_ARCHS%% *}")</string>
+<key>CheckedAllocationsPosixSpawnFlagsGlobal</key><false/>
 </dict>
+<key>AbortOnUnknownIPC</key><true/>
+<key>CrashOnSIGTERMTimeout</key><true/>
+<key>ExtensionWatchdog</key><integer>0</integer>
+<key>LogServiceLifecycle</key><true/>
+<key>LogToFlatFile</key><true/>
+<key>RequireDomainBinding</key><true/>
+<key>SIGTERMTimeout</key><integer>3</integer>
+<key>UseGuardMalloc</key><false/>
 </dict></plist>
 EOF
 
