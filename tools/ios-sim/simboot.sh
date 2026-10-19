@@ -203,7 +203,9 @@ rm -f "$D/var/run/launchd_bootstrap.plist" "$JOB" "$SIM_IOKIT_JOB"
 # level, it loads no jobs. In Self, Child comes after the defaults: a plist key given twice (an extra HOME) has its last
 # value, so an extra is launchd_sim's own as it is its jobs'
 # The other keys have the values CoreSimulator gives them (1174, with its defaults); BinaryOrderPreference is the
-# device's first architecture.
+# device's first architecture. Not here (for the probe, one variable at a time): the two strict
+# keys a Mac sets true, aborting on unknown IPC and requiring domain binding, which could turn a quirk Darling's
+# launchd_sim tolerates into an abort.
 cat >"$D/var/run/launchd_bootstrap.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -217,12 +219,10 @@ cat >"$D/var/run/launchd_bootstrap.plist" <<EOF
 <key>BinaryOrderPreference</key><string>$(x "${SIM_ARCHS%% *}")</string>
 <key>CheckedAllocationsPosixSpawnFlagsGlobal</key><false/>
 </dict>
-<key>AbortOnUnknownIPC</key><true/>
 <key>CrashOnSIGTERMTimeout</key><true/>
 <key>ExtensionWatchdog</key><integer>0</integer>
 <key>LogServiceLifecycle</key><true/>
 <key>LogToFlatFile</key><true/>
-<key>RequireDomainBinding</key><true/>
 <key>SIGTERMTimeout</key><integer>3</integer>
 <key>UseGuardMalloc</key><false/>
 </dict></plist>
