@@ -69,6 +69,9 @@ function(mig defFileName)
 
 		# A changed .defs file, or one it #includes, regenerates its outputs: the command depends on the file, and
 		# with Ninja on what the preprocessor reads for it too (run as mig.sh runs it, with -I its own directory).
+		# Keep the scan's command in step with mig.sh's cpp line (src/external/bootstrap_cmds/migcom.tproj/mig.sh).
+		# mig.sh's own -MD can't serve: it quotes "${deps}", so with more than one output it writes one depfile named
+		# after all of them.
 		# Without, a build went on with stale stubs (a routine added to mach_exc.defs was undeclared).
 		# A MIG import is copied into the generated C, and the C compiler's own deps track it. Other generators, and
 		# CMake before 3.20 (no CMP0116, so the depfile's paths wouldn't match build.ninja's), get the .defs file only.

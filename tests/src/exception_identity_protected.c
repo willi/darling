@@ -8,6 +8,8 @@
 // exception_deliver()), whose token gives back the task's port, and the thread goes on when the handler answers
 // KERN_SUCCESS. The same happens with EXCEPTION_DEFAULT first, so a failure of delivery itself shows as such.
 // It only relies on XNU's interface, so it runs on macOS too.
+// host_set_exception_ports() and host_swap_exception_ports() take the behavior the same way, but need host_priv, so
+// they aren't tested here.
 //
 // Prints one "ok"/"not ok" line per check; the exit status is the number of failed checks.
 
