@@ -126,6 +126,9 @@ static void* faulter(void* arg)
 }
 
 // Runs a thread that faults with `behavior` set on it, and answers its exception; returns the request's ID
+// what the last fault_and_answer()'s receive returned (MACH_RCV_TIMED_OUT when no exception came in 10 s)
+static mach_msg_return_t receive_mr;
+
 static mach_msg_id_t fault_and_answer(int with_behavior, request_t* request)
 {
 	pthread_t thread;
@@ -139,6 +142,7 @@ static mach_msg_id_t fault_and_answer(int with_behavior, request_t* request)
 
 	memset(request, 0, sizeof(*request));
 	mr = mach_msg(&request->head, MACH_RCV_MSG | MACH_RCV_TIMEOUT, 0, sizeof(*request), exc_port, 10000, MACH_PORT_NULL);
+	receive_mr = mr;
 	if (mr != MACH_MSG_SUCCESS)
 	{
 		// no exception came: let the thread go on its own
@@ -225,7 +229,8 @@ int main(void)
 
 	// delivery itself, as a control
 	id = fault_and_answer(EXCEPTION_DEFAULT | MACH_EXCEPTION_CODES, &request);
-	snprintf(detail, sizeof(detail), "message ID %d, the thread %s", id, went_on ? "went on" : "didn't go on");
+	snprintf(detail, sizeof(detail), "message ID %d (receive %#x), the thread %s", id, receive_mr,
+		went_on ? "went on" : "didn't go on");
 	check(id == MSGID_RAISE && request.raise.exception == EXC_BAD_ACCESS && went_on,
 		"a fault comes to an EXCEPTION_DEFAULT port, and the thread goes on when it's answered", detail);
 	if (id == MSGID_RAISE)
@@ -235,7 +240,8 @@ int main(void)
 	}
 
 	id = fault_and_answer(protected_codes, &request);
-	snprintf(detail, sizeof(detail), "message ID %d, the thread %s", id, went_on ? "went on" : "didn't go on");
+	snprintf(detail, sizeof(detail), "message ID %d (receive %#x), the thread %s", id, receive_mr,
+		went_on ? "went on" : "didn't go on");
 	check(id == MSGID_RAISE_IDENTITY_PROTECTED && request.protected_raise.exception == EXC_BAD_ACCESS
 		&& request.protected_raise.code_count == 2 && request.protected_raise.code[1] == (int64_t) (uintptr_t) page
 		&& went_on, "a fault comes to an EXCEPTION_IDENTITY_PROTECTED port as identity_protected, with its address, "

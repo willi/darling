@@ -122,6 +122,8 @@ int main(void)
 	// Regression: darlingserver's suspend signal could come while the thread was checking out of darlingserver.
 	// Its handler's interrupt_enter got the checkout's reply, and pushed it back to a darlingserver that had let
 	// the thread go: the thread stayed, blocked for ever, and thread_suspend() waited for ever for it to stop.
+	// The "threads have gone" check below compares Linux thread counts: nothing else in this test may start a thread
+	// between the two counts (a dispatch call would, and fail it falsely).
 	before = linux_threads();
 	for (round_now = 0; round_now < ROUNDS; round_now++)
 		join_and_suspend();

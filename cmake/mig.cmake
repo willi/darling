@@ -67,13 +67,15 @@ function(mig defFileName)
 			set(MIG_ARCH_SUFFIX "-${MIG_ARCH}-")
 		endif()
 
-		# A changed .defs file, or one it imports, regenerates its outputs: the command depends on the file, and
+		# A changed .defs file, or one it #includes, regenerates its outputs: the command depends on the file, and
 		# with Ninja on what the preprocessor reads for it too (run as mig.sh runs it, with -I its own directory).
 		# Without, a build went on with stale stubs (a routine added to mach_exc.defs was undeclared).
+		# A MIG import is copied into the generated C, and the C compiler's own deps track it. Other generators, and
+		# CMake before 3.20 (no CMP0116, so the depfile's paths wouldn't match build.ninja's), get the .defs file only.
 		set(MIG_OUTPUT_PRIMARY "${CMAKE_CURRENT_BINARY_DIR}/${relativeName}${MIG_ARCH_SUFFIX}${MIG_USER_SOURCE_SUFFIX}")
 		set(MIG_DEPFILE_ARGS "")
 		set(MIG_DEPSCAN_COMMAND "")
-		if (CMAKE_GENERATOR MATCHES "Ninja")
+		if (CMAKE_GENERATOR MATCHES "Ninja" AND POLICY CMP0116)
 			# named after the command's first output, not the .defs file: libsyscall runs mig() twice on some .defs
 			# files (mach_port.defs, with and without _internal), and a shared name let one command's depfile name
 			# the other's output, which kept the edge dirty (mig ran again on every build)

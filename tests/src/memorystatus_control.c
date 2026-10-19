@@ -138,6 +138,8 @@ int main(void)
 	child = fork();
 	if (child == 0)
 	{
+		// its copy of the write end goes, so if the parent dies first the read ends rather than holding the child for good
+		close(pipefd[1]);
 		read(pipefd[0], &byte, 1);
 		_exit(0);
 	}
