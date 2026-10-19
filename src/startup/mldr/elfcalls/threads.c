@@ -48,6 +48,8 @@ static __thread void* t_freeaddr;
 static __thread size_t t_freesize;
 static __thread int t_server_socket = -1;
 static __thread darling_thread_create_callbacks_t t_callbacks = NULL;
+// what the callbacks' signal_stack_setup gave this thread, for its signal_stack_teardown
+static __thread void* t_signal_stack;
 
 typedef void (*thread_ep)(void**, int, ...);
 struct arg_struct
@@ -67,9 +69,34 @@ struct arg_struct
 	uintptr_t stack_bottom;
 	uintptr_t stack_addr;
 	bool is_workqueue;
+	// the creating thread's signal mask, which the new thread takes once it has checked in (a workqueue thread too,
+	// unlike XNU: see __darling_thread_create)
+	sigset_t sigmask;
+	// set by the new thread before it clears `pth` when it couldn't start: a negative errno
+	int error;
 };
 
 static void* darling_thread_entry(void* p);
+
+// Ends the process from a thread that can't run Darling's signal handlers yet: it has no socket of its own, or hasn't
+// checked in. glibc's abort() raises SIGABRT, whose handler (sigexc_handler) calls darlingserver first; on a thread
+// without a socket that aborted again, until the stack overflowed and the process died of SIGSEGV instead.
+static void __attribute__((noreturn)) abort_before_checkin(const char* why)
+{
+	char msg[160];
+	int len = snprintf(msg, sizeof(msg), "mldr: thread %ld %s\n", (long) syscall(SYS_gettid), why);
+
+	if (len > 0)
+		write(STDERR_FILENO, msg, (len < (int) sizeof(msg)) ? len : (int) sizeof(msg) - 1);
+	signal(SIGABRT, SIG_DFL);
+	abort();
+}
+
+#if defined(__GLIBC_PREREQ)
+#	if __GLIBC_PREREQ(2, 32)
+#		define HAVE_PTHREAD_ATTR_SETSIGMASK_NP 1
+#	endif
+#endif
 
 #ifndef PTHREAD_STACK_MIN
 #	define PTHREAD_STACK_MIN 16384
@@ -119,6 +146,10 @@ static dthread_t dthread_structure_allocate(size_t stack_size, size_t guard_size
 	// allocate our stack, guard page, and dthread structure
 	void* base_addr = mmap(NULL, total_size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
 
+	// short of memory: the likeliest reason a thread can't start, which its creator is told of
+	if (base_addr == MAP_FAILED)
+		return NULL;
+
 	// protect our guard page
 	mprotect(base_addr, guard_size, PROT_NONE);
 
@@ -142,6 +173,7 @@ static dthread_t dthread_structure_allocate(size_t stack_size, size_t guard_size
 	return dthread_structure_init(dthread, guard_size, *stack_addr, stack_size, base_addr, total_size);
 };
 
+// Returns the new thread's pthread structure, or NULL if it couldn't be started.
 void* __darling_thread_create(unsigned long stack_size, unsigned long pth_obj_size,
 				void* entry_point, uintptr_t real_entry_point,
 				uintptr_t arg1, uintptr_t arg2, uintptr_t arg3,
@@ -163,6 +195,13 @@ void* __darling_thread_create(unsigned long stack_size, unsigned long pth_obj_si
 	pthread_attr_t attr;
 	pthread_t nativeLibcThread;
 
+	// the hooks up to rpc_unguard are the ones mldr can't start a thread without
+	if (callbacks == NULL || DARLING_THREAD_CREATE_CALLBACK(callbacks, rpc_unguard) == NULL) {
+		static const char msg[] = "mldr: libsystem_kernel gave no thread callbacks, or too few\n";
+		write(STDERR_FILENO, msg, sizeof(msg) - 1);
+		return NULL;
+	}
+
 	pthread_attr_init(&attr);
 	//pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
 	// pthread_attr_setstacksize(&attr, stack_size);
@@ -171,8 +210,13 @@ void* __darling_thread_create(unsigned long stack_size, unsigned long pth_obj_si
 	// in those cases, just use what we're given (it also contains more information)
 	//
 	// otherwise, allocate them ourselves
-	if (pth == NULL || args.is_workqueue) {
+	bool allocated = pth == NULL || args.is_workqueue;
+	if (allocated) {
 		pth = dthread_structure_allocate(stack_size, DEFAULT_DTHREAD_GUARD_SIZE, (void**)&args.stack_addr);
+		if (pth == NULL) {
+			pthread_attr_destroy(&attr);
+			return NULL;
+		}
 	} else if (!args.is_workqueue) {
 		// `arg2` is `stack_addr` for normal threads
 		args.stack_addr = arg2;
@@ -182,24 +226,55 @@ void* __darling_thread_create(unsigned long stack_size, unsigned long pth_obj_si
 
 	// pthread_attr_setstack is buggy. The documentation states we should provide the lowest
 	// address of the stack, yet some versions regard it as the highest address instead.
-	// Therefore it's better to just make the pthread stack as small as possible and then switch
-	// to our own stack instead.
+	// Therefore the Linux thread runs on glibc's own stack until it switches to ours.
 	//pthread_attr_setstack(&attr, ((char*)pth) + pth_obj_size, stack_size - pth_obj_size - 0x1000);
 
 	// std::cout << "Allocated stack at " << pth << ", size " << stack_size << std::endl;
 
+	// This fails (EINVAL: 4096 is below PTHREAD_STACK_MIN), so glibc's stack is its default size (8 MiB, from
+	// RLIMIT_STACK). Keep it large: darling_thread_entry runs on it, and so would a signal handler that ran there.
 	pthread_attr_setstacksize(&attr, 4096);
 
 	//pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
 
 	args.pth = pth;
-	pthread_create(&nativeLibcThread, &attr, darling_thread_entry, &args);
+	// The new thread starts with every signal blocked, until it has checked in on its own RPC socket: before, a
+	// signal handler's calls (interrupt_enter first) would have no socket to go out on, which aborts the process, or
+	// darlingserver would register the thread before its checkin. A daemon in dispatch_main() blocks signals on its
+	// main thread, so the process's signals go to its other threads, a new one too. Signals sent meanwhile stay pending.
+	//
+	// Then it takes its creator's mask, a workqueue thread too. That differs from XNU on purpose: XNU starts a
+	// workqueue thread with every asynchronous signal blocked (~workq_threadmask, bsd/kern/kern_fork.c) and its
+	// EVFILT_SIGNAL knotes see a signal without any thread taking it. Darling posts EVFILT_SIGNAL from sigexc_handler,
+	// so some thread must take the signal: with XNU's mask, a dispatch_main() daemon's signal sources would never fire.
+	sigset_t all_signals;
+	sigfillset(&all_signals);
+#if HAVE_PTHREAD_ATTR_SETSIGMASK_NP
+	// glibc starts the thread with this mask, and leaves the creator's alone
+	pthread_sigmask(SIG_BLOCK, NULL, &args.sigmask);
+	pthread_attr_setsigmask_np(&attr, &all_signals);
+	int err = pthread_create(&nativeLibcThread, &attr, darling_thread_entry, &args);
+#else
+	pthread_sigmask(SIG_SETMASK, &all_signals, &args.sigmask);
+	int err = pthread_create(&nativeLibcThread, &attr, darling_thread_entry, &args);
+	pthread_sigmask(SIG_SETMASK, &args.sigmask, NULL);
+#endif
 	pthread_attr_destroy(&attr);
 
-	while (args.pth != NULL)
-		sched_yield();
+	// no thread will clear args.pth: the caller fails the call (as XNU's bsdthread_create does)
+	if (err == 0) {
+		while (__atomic_load_n(&args.pth, __ATOMIC_ACQUIRE) != NULL)
+			sched_yield();
+		// or the thread couldn't start after all, and has gone
+		if (args.error == 0)
+			return pth;
+	}
 
-	return pth;
+	if (allocated) {
+		dthread_t dthread = pth;
+		munmap(dthread->freeaddr, dthread->freesize);
+	}
+	return NULL;
 }
 
 static void* darling_thread_entry(void* p)
@@ -212,12 +287,25 @@ static void* darling_thread_entry(void* p)
 	dthread_t dthread = args.pth;
 	uintptr_t* flags = args.is_workqueue ? &args.arg2 : &args.arg3;
 
+	// First, before darlingserver knows of the thread: what Darling's signal handlers need on it. Without it, the
+	// thread doesn't start, and its creator fails the call.
+	int (*signal_stack_setup)(void**) = DARLING_THREAD_CREATE_CALLBACK(args.callbacks, signal_stack_setup);
+	if (signal_stack_setup != NULL) {
+		int err = signal_stack_setup(&t_signal_stack);
+		if (err != 0) {
+			in_args->error = err;
+			// the creator goes on, and `in_args` with it
+			__atomic_store_n(&in_args->pth, NULL, __ATOMIC_RELEASE);
+			pthread_detach(pthread_self());
+			return NULL;
+		}
+	}
+
 	// create a new dserver RPC socket
 	int new_rpc_fd = __mldr_create_rpc_socket();
 	if (new_rpc_fd < 0) {
 		// we can't do anything if we don't get our own separate connection to darlingserver
-		fprintf(stderr, "Failed to create socket\n");
-		abort();
+		abort_before_checkin("couldn't create its darlingserver socket");
 	}
 
 	// guard the new RPC FD
@@ -237,22 +325,32 @@ static void* darling_thread_entry(void* p)
 	// the lifetime pipe fd is ignored as the process should already have been registered
 	if (dserver_rpc_explicit_checkin(t_server_socket, false, &dummy_stack_variable, -1) < 0) {
 		// we can't do ANYTHING if darlingserver doesn't acknowledge us successfully
-		abort();
+		abort_before_checkin("couldn't check in with darlingserver");
 	}
 
 	int thread_self_port = args.callbacks->thread_self_trap();
 	dthread->tsd[DTHREAD_TSD_SLOT_MACH_THREAD_SELF] = (void*)(intptr_t)thread_self_port;
 	args.port = thread_self_port;
 
-	in_args->pth = NULL;
+	__atomic_store_n(&in_args->pth, NULL, __ATOMIC_RELEASE);
 
 	if (setjmp(t_jmpbuf))
 	{
+		// Every signal is blocked (__darling_thread_terminate), so the alternate signal stack isn't in use.
+		void (*signal_stack_teardown)(void*) = DARLING_THREAD_CREATE_CALLBACK(t_callbacks, signal_stack_teardown);
+		if (signal_stack_teardown != NULL)
+			signal_stack_teardown(t_signal_stack);
+
 		// Terminate the Linux thread
 		munmap(t_freeaddr, t_freesize);
 		pthread_detach(pthread_self());
 		return NULL;
 	}
+
+	// The last step before the jump: a signal handler may run now. The thread is registered, on its own socket, has
+	// its alternate signal stack (above), and could terminate (longjmp above). Its creator has gone on, so a handler
+	// waiting for something the creator holds doesn't stop both.
+	pthread_sigmask(SIG_SETMASK, &args.sigmask, NULL);
 
 	void *stack_ptr = align_16(args.stack_addr);
 
@@ -399,11 +497,16 @@ int __darling_thread_rpc_socket(void) {
 			t_server_socket = __dserver_main_thread_socket_fd;
 		} else {
 			// threads should already have a per-thread socket assigned when they're created
-			abort();
+			abort_before_checkin("called darlingserver before its checkin (from a signal handler?)");
 		}
 	}
 	return t_server_socket;
 };
+
+bool __darling_thread_has_rpc_socket(void) {
+	// a thread mldr starts has its socket before it can take a signal; the main thread's is mldr's
+	return t_server_socket != -1 || getpid() == syscall(SYS_gettid);
+}
 
 void __darling_thread_rpc_socket_refresh(void) {
 	int new_rpc_fd = __mldr_create_rpc_socket();

@@ -133,4 +133,6 @@ void elfcalls_make(struct elf_calls* calls)
 	calls->fork_prepare = __mldr_fork_prepare;
 	calls->fork_parent = __mldr_fork_parent;
 	calls->fork_child = __mldr_fork_child;
+
+	calls->dserver_thread_has_socket = __darling_thread_has_rpc_socket;
 }

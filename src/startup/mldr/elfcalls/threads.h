@@ -20,6 +20,7 @@ along with Darling.  If not, see <http://www.gnu.org/licenses/>.
 #ifndef DYLD_THREADS_H
 #define DYLD_THREADS_H
 #include <stdint.h>
+#include <stdbool.h>
 #include "elfcalls.h"
 
 #ifdef __cplusplus
@@ -34,6 +35,7 @@ int __darling_thread_terminate(void* stackaddr,
 				unsigned long freesize, unsigned long pthobj_size);
 void* __darling_thread_get_stack(void);
 int __darling_thread_rpc_socket(void);
+bool __darling_thread_has_rpc_socket(void);
 void __darling_thread_rpc_socket_refresh(void);
 
 #ifdef __cplusplus
