@@ -18,6 +18,8 @@
 // - A process that inherited SIGTTOU ignored, in a background process group of its terminal (a pty of a session of
 //   its own), sets the terminal's attributes, as the kernel lets it when SIGTTOU is ignored, instead of being sent
 //   SIGTTOU again and again. Skipped where no pty can be made.
+// - A handler that forks runs only while posix_spawn() holds none of the fork's locks: another process sends SIGPROF
+//   throughout a run of spawns.
 // It uses only XNU's interface.
 //
 // Prints one "ok"/"not ok" line per check; the exit status is the number of failed checks.
@@ -44,6 +46,7 @@
 #define REPORT_CHLD_IGN 8  // SIGCHLD's action is SIG_IGN
 #define REPORT_FD 3
 #define WAIT_MS 10000
+#define PINGS 200
 
 extern char** environ;
 
@@ -82,6 +85,59 @@ static void on_vtalrm(int sig)
 {
 	(void) sig;
 	vtalrm_handled++;
+}
+
+// A handler that forks (async-signal-safe): posix_spawn() takes the locks fork() takes (libSystem's atfork ones,
+// malloc's among them), so it must run no handler while it holds them. One that ran then found them held by its own
+// thread.
+static volatile sig_atomic_t fork_handled;
+
+static void on_fork_signal(int sig)
+{
+	(void) sig;
+	pid_t p = fork();
+	if (p == 0)
+		_exit(0);
+	if (p > 0)
+		waitpid(p, NULL, 0);
+	fork_handled++;
+}
+
+// in a child of its own, as the case may deadlock: spawns for as long as another process sends it PINGS SIGPROFs, 2 ms
+// apart (at a rate the forks keep up with); exits 0, or 1 if a spawn failed, 2 if no signal was handled
+static int fork_handler_spawns(void)
+{
+	struct sigaction sa = { .sa_handler = on_fork_signal, .sa_flags = SA_RESTART };
+	char* av[] = { self_path, "exit", NULL };
+	pid_t self = getpid(), pinger;
+
+	sigaction(SIGPROF, &sa, NULL);
+	if ((pinger = fork()) == 0)
+	{
+		for (int i = 0; i < PINGS; i++)
+		{
+			kill(self, SIGPROF);
+			usleep(2000);
+		}
+		_exit(0);
+	}
+	int failed = 0;
+	while (!failed && waitpid(pinger, NULL, WNOHANG) == 0)
+	{
+		pid_t pid;
+		int status;
+		if (posix_spawn(&pid, self_path, NULL, NULL, av, environ) != 0)
+			failed = 1;
+		else
+			while (waitpid(pid, &status, 0) < 0 && errno == EINTR)
+				;
+	}
+	if (failed)
+	{
+		kill(pinger, SIGKILL);
+		waitpid(pinger, NULL, 0);
+	}
+	return failed ? 1 : (fork_handled == 0) ? 2 : 0;
 }
 
 // "report": this image's signal state, to REPORT_FD
@@ -423,6 +479,31 @@ int main(int argc, char** argv)
 		cur.sa_handler == on_signal ? "kept" : "gone", sigismember(&mask, SIGURG) ? "blocked" : "unblocked");
 	check(err != 0 && cur.sa_handler == on_signal && sigismember(&mask, SIGURG),
 		"a POSIX_SPAWN_SETEXEC spawn that fails leaves the caller's handlers and mask", detail);
+
+	// a handler that forks, for signals that came during posix_spawn()
+	pid_t mpid = fork();
+	if (mpid == 0)
+		_exit(fork_handler_spawns());
+	int mstatus = 0, mdone = 0;
+	for (int ms = 0; ms < 4 * WAIT_MS && !mdone; ms += 50)
+	{
+		if (waitpid(mpid, &mstatus, WNOHANG) == mpid)
+			mdone = 1;
+		else
+			sleep_ms(50);
+	}
+	if (!mdone)
+	{
+		kill(mpid, SIGKILL);
+		waitpid(mpid, NULL, 0);
+		snprintf(detail, sizeof(detail), "no end in %d s (a deadlock)", 4 * WAIT_MS / 1000);
+	}
+	else if (WIFSIGNALED(mstatus))
+		snprintf(detail, sizeof(detail), "killed by signal %d", WTERMSIG(mstatus));
+	else
+		snprintf(detail, sizeof(detail), "%s", WEXITSTATUS(mstatus) == 1 ? "a spawn failed" : "no signal was handled");
+	check(mdone && WIFEXITED(mstatus) && WEXITSTATUS(mstatus) == 0,
+		"a handler that forks runs for signals that came during posix_spawn()", detail);
 
 	return failures;
 }
