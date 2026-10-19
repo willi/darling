@@ -11,7 +11,8 @@
 # helper; "all": every one in System/Library/LaunchDaemons). "paths" loads them as CoreSimulator does: launchd_sim gets
 # every LaunchDaemons and LaunchAngels directory of the runtime root and the device's data that exists, and registers
 # every job in them itself, all their services before it starts any job. SIM_DAEMONS_EXCLUDED then names jobs to leave
-# out (labels, as their plists' file names). launchd_sim starts each job when a client first looks it up, or at load if
+# out (labels, as their plists' file names). SIM_DAEMONS_DISABLED names jobs launchd_sim registers but doesn't start
+# (labels), as CoreSimulator's disabled jobs. launchd_sim starts each job when a client first looks it up, or at load if
 # it says so. SIM_EXTRA_ENVIRONMENT adds NAME=VALUE pairs (space-separated) to the environment of the device's
 # launchd_sim and its jobs. They go into Child, which launchd_sim sets over each job's own variables: an extra HOME,
 # say, replaces an app's data container too. SIM_UID and SIM_GID are the user and group the device runs as:
@@ -29,6 +30,7 @@ set -eu
 . "$(dirname "$0")/simdevice.sh"
 : "${SIM_DAEMONS:=com.apple.cfprefsd.xpc.daemon com.apple.logd com.apple.logd_helper}"
 : "${SIM_DAEMONS_EXCLUDED:=}"
+: "${SIM_DAEMONS_DISABLED:=}"
 : "${SIM_BOOT_TIMEOUT:=60}"
 sim_check_seconds SIM_BOOT_TIMEOUT "$SIM_BOOT_TIMEOUT"
 
@@ -268,6 +270,25 @@ cat >"$SIM_IOKIT_JOB" <<EOF
 <key>StandardErrorPath</key><string>$(x "$SIM_IOKIT_LOG")</string>
 </dict></plist>
 EOF
+
+# the disabled jobs, as CoreSimulator gives them: a disabled.plist in launchd_sim's state directory (where its log
+# goes), which launchd_sim, running as the device's user, must be able to write
+state=${LOG%/*}
+rm -f "$state/disabled.plist"
+if [ -n "$SIM_DAEMONS_DISABLED" ]; then
+	mkdir -p "$state"
+	chown "$SIM_UID:$SIM_GID" "$state"
+	{
+		echo '<?xml version="1.0" encoding="UTF-8"?>'
+		echo '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">'
+		printf '<plist version="1.0"><dict>'
+		for label in $SIM_DAEMONS_DISABLED; do
+			printf '<key>%s</key><true/>' "$(x "$label")"
+		done
+		echo '</dict></plist>'
+	} >"$state/disabled.plist"
+	chown "$SIM_UID:$SIM_GID" "$state/disabled.plist"
+fi
 
 rm -f "$LOG" "$SIM_IOKIT_LOG"
 launchctl load "$JOB"
