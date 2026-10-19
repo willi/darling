@@ -74,7 +74,10 @@ function(mig defFileName)
 		set(MIG_DEPFILE_ARGS "")
 		set(MIG_DEPSCAN_COMMAND "")
 		if (CMAKE_GENERATOR MATCHES "Ninja")
-			set(MIG_DEPFILE "${CMAKE_CURRENT_BINARY_DIR}/${relativeName}${MIG_ARCH_SUFFIX}.defs.d")
+			# named after the command's first output, not the .defs file: libsyscall runs mig() twice on some .defs
+			# files (mach_port.defs, with and without _internal), and a shared name let one command's depfile name
+			# the other's output, which kept the edge dirty (mig ran again on every build)
+			set(MIG_DEPFILE "${MIG_OUTPUT_PRIMARY}.d")
 			set(MIG_DEPFILE_ARGS DEPFILE ${MIG_DEPFILE})
 			set(MIG_DEPSCAN_COMMAND COMMAND
 				${CMAKE_C_COMPILER} -x c -M -MG -MT ${MIG_OUTPUT_PRIMARY} -MF ${MIG_DEPFILE}
