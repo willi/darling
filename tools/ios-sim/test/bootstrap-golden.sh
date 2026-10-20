@@ -19,7 +19,8 @@ export HOME
 printf '#!/bin/sh\ncase $1 in list) exit 1 ;; esac\nexit 0\n' >"$w/stub/launchctl"
 printf '#!/bin/sh\necho HOSTBUILD\n' >"$w/stub/sw_vers"
 chmod 755 "$w/stub/launchctl" "$w/stub/sw_vers"
-# simboot.sh writes the bootstrap, loads its jobs (stubbed) and gives up on a boot that doesn't come
+# simboot.sh writes the bootstrap, loads the device job (stubbed) and stops at its lookup, which the stub's list
+# fails; the golden needs only the bootstrap
 (
 	umask 022
 	PATH="$w/stub:$PATH" SIM_RUNTIME_ROOT="$w/rt" SIM_DEVICE_DATA="$w/data" SIM_BOOT_TIMEOUT=0 \
