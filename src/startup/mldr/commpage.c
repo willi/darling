@@ -20,9 +20,12 @@ static uint64_t get_cpu_caps(void);
 
 #define CGET(p) (commpage + ((p)-_COMM_PAGE_START_ADDRESS))
 
-void commpage_setup(bool _64bit)
+// false, with nothing mapped, when something else already has the commpage's address
+bool commpage_setup(bool _64bit)
 {
 	uint8_t* commpage;
+	void* address = (void*)(_64bit ? _COMM_PAGE64_BASE_ADDRESS : _COMM_PAGE32_BASE_ADDRESS);
+	size_t length = _64bit ? _COMM_PAGE64_AREA_LENGTH : _COMM_PAGE32_AREA_LENGTH;
 	uint64_t* cpu_caps64;
 	uint32_t* cpu_caps;
 	uint16_t* version;
@@ -33,12 +36,18 @@ void commpage_setup(bool _64bit)
 	uint8_t *user_page_shift, *kernel_page_shift;
 	struct sysinfo si;
 
-	commpage = (uint8_t*) mmap((void*)(_64bit ? _COMM_PAGE64_BASE_ADDRESS : _COMM_PAGE32_BASE_ADDRESS),
-			_64bit ? _COMM_PAGE64_AREA_LENGTH : _COMM_PAGE32_AREA_LENGTH, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0);
+	commpage = (uint8_t*) mmap(address, length, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0);
 	if (commpage == MAP_FAILED)
 	{
 		fprintf(stderr, "Cannot mmap commpage: %s\n", strerror(errno));
 		exit(1);
+	}
+	// the address is only a hint: with something there, the kernel maps the commpage elsewhere, where no program
+	// looks for it
+	if (commpage != address)
+	{
+		munmap(commpage, length);
+		return false;
 	}
 
 	signature = (char*)CGET(_COMM_PAGE_SIGNATURE);
@@ -80,6 +89,8 @@ void commpage_setup(bool _64bit)
 		uint64_t* memsize = (uint64_t*)CGET(_COMM_PAGE_MEMORY_SIZE);
 		*memsize = si.totalram * si.mem_unit;
 	}
+
+	return true;
 }
 
 uint64_t get_cpu_caps(void)
