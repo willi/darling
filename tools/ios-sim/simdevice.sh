@@ -58,3 +58,63 @@ SIM_DEVICE_BOOTED='(system) <Notice>: exiting bootstrap mode'
 # the job serving the device's IOKit (simiokitd)
 SIM_IOKIT_JOB_LABEL="$SIM_DEVICE_JOB_LABEL.iokit"
 SIM_IOKIT_JOB="$SIM_DEVICE_DATA/var/run/$SIM_IOKIT_JOB_LABEL.plist"
+# simiokitd's log, which launchd makes when it starts simiokitd, and its line once it has registered the device's IOKit
+SIM_IOKIT_LOG="$SIM_DEVICE_DATA/Library/Logs/simiokitd.log"
+SIM_IOKIT_REGISTERED='simiokitd: registered'
+
+# sim_boot_state: how far the device has booted, from one look at each log, as a word in SIM_BOOT_STATE:
+# - booted: launchd_sim has left bootstrap mode, and simiokitd has registered the device's IOKit in it;
+# - bootstrap: launchd_sim hasn't left bootstrap mode;
+# - iokit-not-started: launchd hasn't started simiokitd;
+# - iokit-unregistered: simiokitd hasn't registered; SIM_IOKIT_LAST is its log's last line (empty: none yet).
+# Whether the device's job is loaded at all is launchctl's to say. It sets variables, rather than printing, so a wait
+# can call it without a subshell.
+sim_boot_state() {
+	SIM_IOKIT_LAST=
+	if ! grep -qF "$SIM_DEVICE_BOOTED" "$SIM_DEVICE_LOG" 2>/dev/null; then
+		SIM_BOOT_STATE=bootstrap
+	elif [ ! -e "$SIM_IOKIT_LOG" ]; then
+		SIM_BOOT_STATE=iokit-not-started
+	else
+		sim_iokit=$(cat "$SIM_IOKIT_LOG" 2>/dev/null) || sim_iokit=
+		case $sim_iokit in
+		*"$SIM_IOKIT_REGISTERED"*) SIM_BOOT_STATE=booted ;;
+		*)
+			SIM_BOOT_STATE=iokit-unregistered
+			SIM_IOKIT_LAST=${sim_iokit##*"
+"}
+			;;
+		esac
+		unset sim_iokit
+	fi
+}
+
+# sim_check_seconds NAME VALUE: exit 64 unless VALUE, NAME's, is a whole number of seconds (ten digits at most)
+sim_check_seconds() {
+	case $2 in
+	'' | *[!0-9]* | ???????????*)
+		echo "$1 must be a whole number of seconds: $2" >&2
+		exit 64
+		;;
+	esac
+}
+
+# sim_wait_start, then sim_waited after each pass's sleep 1: SIM_WAITED is the seconds waited so far, each pass counting
+# as at least 1 s and at most 30, far over any pass a loaded host takes: the wall clock jumping (a resume from suspend, an
+# NTP step) neither ends a wait at once nor stretches it. Darling has no other clock: its CLOCK_MONOTONIC is the time
+# of day too.
+sim_wait_start() {
+	sim_wait_prev=$(date +%s)
+	SIM_WAITED=0
+}
+sim_waited() {
+	sim_wait_now=$(date +%s)
+	sim_wait_pass=$((sim_wait_now - sim_wait_prev))
+	sim_wait_prev=$sim_wait_now
+	if [ "$sim_wait_pass" -lt 1 ]; then
+		sim_wait_pass=1
+	elif [ "$sim_wait_pass" -gt 30 ]; then
+		sim_wait_pass=30
+	fi
+	SIM_WAITED=$((SIM_WAITED + sim_wait_pass))
+}
