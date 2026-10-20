@@ -31,6 +31,8 @@ Module.symvers
 
 # Directories where too much temp stuff may lay around
 tests
+# but not the test harness at the top (tests/CMakeLists.txt, tests/src): a new test source must not need add -f
+!/tests/
 
 # The suggested build folder
 build

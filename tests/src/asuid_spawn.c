@@ -1,12 +1,15 @@
 // simasuid (src/ios-sim) runs a program as another user, and simboot.sh relies on everything that program starts
 // staying that user: a device's launchd_sim, and every process it spawns. Darling keeps the ids in darlingserver,
 // which copies them to a fork and keeps them across exec. Checks a process simasuid starts, and one that process
-// posix_spawn()s, have the uid, the gid, and only the gid as their group; and simasuid's exit codes.
+// posix_spawn()s, have the uid, the gid, and only the gid as their group, and the audit session simasuid starts for the
+// uid (audit ID 501, one session ID from 100000 up, in both audit tokens, as a Mac's login session); and simasuid's
+// exit codes.
 //
 // Prints one "ok"/"not ok" line per check; the exit status is the number of failed checks.
 
 #include <errno.h>
 #include <mach-o/dyld.h>
+#include <mach/mach.h>
 #include <spawn.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -30,14 +33,19 @@ static void check(int ok, const char* what)
 		failures++;
 }
 
-// writes "uid euid gid egid ngroups group0" to fd. The groups are the process's own, as setgroups() set them: the
+// writes "uid euid gid egid ngroups group0 auid asid" to fd. The groups are the process's own, as setgroups() set them: the
 // system call, not libc's getgroups(), which answers the user's groups from the directory (getgroups(2)).
 static void report(int fd)
 {
 	gid_t groups[NGROUPS_MAX];
 	int n = syscall(SYS_getgroups, NGROUPS_MAX, groups);
-	dprintf(fd, "%d %d %d %d %d %d\n", (int) getuid(), (int) geteuid(), (int) getgid(), (int) getegid(), n,
-		n > 0 ? (int) groups[0] : -1);
+	audit_token_t token;
+	mach_msg_type_number_t count = TASK_AUDIT_TOKEN_COUNT;
+	memset(&token, 0, sizeof(token));
+	task_info(mach_task_self(), TASK_AUDIT_TOKEN, (task_info_t) &token, &count);
+	// the token's auid (val[0]) and asid (val[6]), as XNU's proc_calc_audit_token() fills them
+	dprintf(fd, "%d %d %d %d %d %d %u %u\n", (int) getuid(), (int) geteuid(), (int) getgid(), (int) getegid(), n,
+		n > 0 ? (int) groups[0] : -1, token.val[0], token.val[6]);
 }
 
 static int spawn_wait(char* const argv[])
@@ -86,12 +94,12 @@ int main(int argc, char** argv)
 	close(p[1]);
 	char buf[256] = "";
 	FILE* f = fdopen(p[0], "r");
-	int got[2][6];
+	unsigned got[2][8];
 	int lines = 0;
 	while (lines < 2 && fgets(buf, sizeof(buf), f))
 	{
-		if (sscanf(buf, "%d %d %d %d %d %d", &got[lines][0], &got[lines][1], &got[lines][2], &got[lines][3],
-				&got[lines][4], &got[lines][5]) == 6)
+		if (sscanf(buf, "%u %u %u %u %u %u %u %u", &got[lines][0], &got[lines][1], &got[lines][2], &got[lines][3],
+				&got[lines][4], &got[lines][5], &got[lines][6], &got[lines][7]) == 8)
 			lines++;
 	}
 	fclose(f);
@@ -109,7 +117,13 @@ int main(int argc, char** argv)
 		check(got[i][4] == 1 && got[i][5] == 20, what);
 		if (got[i][4] != 1 || got[i][5] != 20)
 			printf("# %d groups, the first %d\n", got[i][4], got[i][5]);
+		// B33: auid and asid were 0 in every audit token
+		snprintf(what, sizeof(what), "%s: audit token auid 501, session ID 100000 or more", who);
+		check(got[i][6] == 501 && got[i][7] >= 100000, what);
+		if (got[i][6] != 501 || got[i][7] < 100000)
+			printf("# auid %u, asid %u\n", got[i][6], got[i][7]);
 	}
+	check(lines == 2 && got[0][7] == got[1][7], "the program and its child are in one session");
 
 	char* bad_uid[] = { SIMASUID, "mobile", "20", "/usr/bin/true", NULL };
 	check(spawn_wait(bad_uid) == 64, "a uid that isn't a number: exit 64");

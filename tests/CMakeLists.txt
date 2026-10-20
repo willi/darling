@@ -67,5 +67,6 @@ darling_test(kprintf_cost)
 target_include_directories(kprintf_cost PRIVATE ${CMAKE_BINARY_DIR}/src/external/darlingserver/include)
 add_dependencies(kprintf_cost generate_dserver_rpc_wrappers)
 darling_test(fork_uniqueid)
+darling_test(audit_session)
 
 install(PROGRAMS run-all.sh DESTINATION libexec/darling/usr/libexec/darling-tests)
