@@ -8995,7 +8995,11 @@ job_mig_register2(job_t j, name_t servicename, mach_port_t serviceport, uint64_t
 #endif
 
 	// 5641783 for the embedded hack
-#if !TARGET_OS_EMBEDDED
+	// Darling, too, has no per-user launchds that serve (the per-user bootstrap port a client is sent to never answers),
+	// so it does what the embedded build does: a non-root client registers in the root bootstrap, as it did while
+	// audit tokens carried ruid 0 (before darlingserver#18). A Mac would put the name in the user's own domain, where
+	// root's clients don't look; here it is shared, and a non-root client still can't take a name another job holds.
+#if !TARGET_OS_EMBEDDED && !defined(DARLING)
 	/*
 	 * From a per-user/session launchd's perspective, SecurityAgent (UID
 	 * 92) is a rogue application (not our UID, not root and not a child of
@@ -9058,7 +9062,9 @@ job_mig_look_up2(job_t j, mach_port_t srp, name_t servicename, mach_port_t *serv
 	bool xpc_req = (j->mgr->properties & BOOTSTRAP_PROPERTY_XPC_DOMAIN);
 
 	// 5641783 for the embedded hack
-#if !TARGET_OS_EMBEDDED
+	// Darling: as in job_mig_register2(), a non-root client is answered from the root bootstrap, as a Mac answers a
+	// user's lookup of a system service
+#if !TARGET_OS_EMBEDDED && !defined(DARLING)
 	if (unlikely(pid1_magic && j->anonymous && j->mgr->parentmgr == NULL && ldc->uid != 0 && ldc->euid != 0)) {
 		return VPROC_ERR_TRY_PER_USER;
 	}
@@ -11496,8 +11502,15 @@ job_mig_spawn_internal(job_t j, vm_offset_t indata, mach_msg_type_number_t indat
 #endif
 
 	if (unlikely(pid1_magic && ldc->euid && ldc->uid)) {
+#ifdef DARLING
+		// no per-user launchd to punt to (job_mig_register2()). A job made here would run as its plist's UserName,
+		// root included, where a Mac's per-user launchd runs it as the user: refused, at once
+		job_log(j, LOG_DEBUG, "Refusing a non-root spawn: no per-user launchd");
+		return BOOTSTRAP_NOT_PRIVILEGED;
+#else
 		job_log(j, LOG_DEBUG, "Punting spawn to per-user-context");
 		return VPROC_ERR_TRY_PER_USER;
+#endif
 	}
 
 	if (!job_assumes(j, indataCnt != 0)) {
