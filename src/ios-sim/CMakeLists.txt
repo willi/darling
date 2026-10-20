@@ -52,7 +52,7 @@ add_custom_target(ios_sim_bootstrap_golden ALL DEPENDS ${CMAKE_CURRENT_BINARY_DI
 
 # simboot.sh stops at once, saying why, when a job file came out with an empty value or launchd refused a job
 # (tools/ios-sim/test/simboot-fail-fast.sh): such a boot otherwise waits out its whole timeout. A few seconds, with
-# launchctl and sed stubbed, again only when simboot.sh or the test changes.
+# launchctl and sed stubbed, again only when the scripts change.
 add_custom_command(
 	OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/simboot-fail-fast.stamp
 	COMMAND sh ${ios_sim_test}/simboot-fail-fast.sh

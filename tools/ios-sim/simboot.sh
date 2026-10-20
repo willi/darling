@@ -269,13 +269,17 @@ check_written "$SIM_IOKIT_JOB"
 rm -f "$LOG" "$SIM_IOKIT_LOG"
 # launchctl load exits 0 when launchd refuses a job (it only prints why), so each job is looked up after it: a
 # device that can't start fails here, not at the end of the wait
+# (list's own errors aren't hidden: a list that couldn't start says so above, and the job may be loaded after all)
 launchctl load "$JOB"
-if ! launchctl list "$NAME" >/dev/null 2>&1; then
-	echo "launchd didn't load $JOB (launchctl's message is above)" >&2
+if ! launchctl list "$NAME" >/dev/null; then
+	echo "launchd didn't load $JOB (launchctl's message is above); simshutdown.sh stops $NAME if it is loaded" >&2
 	exit 1
 fi
+# an IOKit job left loaded by an earlier boot that stopped here would make the load "Already loaded" and the lookup
+# below pass, and the boot would then wait for a simiokitd that never runs: unload it first (it has the same label)
+launchctl unload "$SIM_IOKIT_JOB" 2>/dev/null || true
 launchctl load "$SIM_IOKIT_JOB"
-if ! launchctl list "$SIM_IOKIT_JOB_LABEL" >/dev/null 2>&1; then
+if ! launchctl list "$SIM_IOKIT_JOB_LABEL" >/dev/null; then
 	echo "launchd didn't load $SIM_IOKIT_JOB (launchctl's message is above); simshutdown.sh stops $NAME" >&2
 	exit 1
 fi
