@@ -33,6 +33,7 @@ D="$SIM_DEVICE_DATA"
 NAME="$SIM_DEVICE_JOB_LABEL"
 JOB="$SIM_DEVICE_JOB"
 LOG="$SIM_DEVICE_LOG"
+BOOTSTRAP="$SIM_DEVICE_BOOTSTRAP"
 BOOT_TIME=$(date +%s)
 
 if [ $# -gt 0 ]; then
@@ -182,14 +183,14 @@ EOF
 }
 
 # a device booted before keeps its job files, and with them their modes: they're written anew with this umask
-rm -f "$D/var/run/launchd_bootstrap.plist" "$JOB" "$SIM_IOKIT_JOB"
+rm -f "$BOOTSTRAP" "$JOB" "$SIM_IOKIT_JOB"
 # the memory-warning file a Mac's CoreSimulator makes before the boot, empty
 : >"$D/var/run/memory_warning_simulation"
 
 # launchd_sim reads everything but the environments from inside the Bootstrap dictionary too: with Paths at the top
 # level, it loads no jobs. In Self, Child comes after the defaults: a plist key given twice (an extra HOME) has its last
 # value, so an extra is launchd_sim's own as it is its jobs'
-cat >"$D/var/run/launchd_bootstrap.plist" <<EOF
+cat >"$BOOTSTRAP" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
@@ -219,7 +220,7 @@ cat >"$JOB" <<EOF
 <key>ProgramArguments</key><array>$as_user
 <string>$(x "$R/sbin/launchd_sim_trampoline")</string>
 <string>$(x "$R/sbin/launchd_sim")</string>
-<string>$(x "$D/var/run/launchd_bootstrap.plist")</string>
+<string>$(x "$BOOTSTRAP")</string>
 </array>
 <key>RunAtLoad</key><true/>
 <key>StandardOutPath</key><string>$(x "$D/Library/Logs/launchd_sim.log")</string>

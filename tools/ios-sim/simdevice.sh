@@ -82,6 +82,8 @@ fi
 # label of the launchd job that runs it
 SIM_DEVICE_JOB_LABEL="com.apple.CoreSimulator.SimDevice.$SIM_UDID"
 SIM_DEVICE_JOB="$SIM_DEVICE_DATA/var/run/$SIM_DEVICE_JOB_LABEL.plist"
+# the bootstrap simboot.sh writes for launchd_sim, where a Mac's CoreSimulator writes it
+SIM_DEVICE_BOOTSTRAP="$SIM_DEVICE_DATA/var/run/launchd_bootstrap.plist"
 # launchd_sim's own log, in the temporary state directory it makes, and its line once the device has booted
 SIM_DEVICE_LOG="/private/var/tmp/$SIM_DEVICE_JOB_LABEL/launchd.log"
 SIM_DEVICE_BOOTED='(system) <Notice>: exiting bootstrap mode'

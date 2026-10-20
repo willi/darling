@@ -27,14 +27,16 @@ chmod 755 "$w/stub/launchctl" "$w/stub/sw_vers"
 		SIM_FRAMEBUFFER_FRAMEWORK=/Library/Developer/PrivateFrameworks/CoreSimulator.framework/Resources/Platforms/iphoneos/Library/PrivateFrameworks/SimFramebuffer.framework/SimFramebuffer \
 		sh "$here/../simboot.sh" >"$w/simboot.out" 2>&1
 ) || true
-b=$w/data/var/run/launchd_bootstrap.plist
+# simdevice.sh's names for the device simboot.sh booted
+SIM_DEVICE_DATA=$w/data
+# shellcheck source=../simdevice.sh
+. "$here/../simdevice.sh"
+b=$SIM_DEVICE_BOOTSTRAP
 [ -f "$b" ] || {
 	echo "simboot.sh wrote no bootstrap:" >&2
 	cat "$w/simboot.out" >&2
 	exit 1
 }
-# shellcheck source=../simdevice.sh
-. "$here/../simdevice.sh"
 # the golden master's placeholders (bootstrap.golden's header), for the test's own values
 awk -f "$here/plist2lines.awk" "$b" | awk -F '\t' -v OFS='\t' -v data="$w/data" -v rt="$w/rt" -v home="$w/home" \
 	-v udid="$SIM_UDID" -v name="$SIM_DEVICE_NAME" '
