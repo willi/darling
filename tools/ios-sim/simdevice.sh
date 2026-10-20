@@ -4,6 +4,26 @@
 # shellcheck shell=sh disable=SC2034
 : "${SIM_RUNTIME_VERSION:=26.5}"
 : "${SIM_RUNTIME_BUILD_VERSION:=23F77}"
+# the runtime's identifier: its .simruntime bundle's CFBundleIdentifier, from the bundle's Info.plist two levels above
+# the RuntimeRoot; with no Info.plist there (a RuntimeRoot copied on its own), the form the identifier takes, the
+# major and minor version (com.apple.CoreSimulator.SimRuntime.iOS-26-5)
+if [ -z "${SIM_RUNTIME_IDENTIFIER:-}" ]; then
+	if [ -f "${SIM_RUNTIME_ROOT:-}/../../Info.plist" ]; then
+		SIM_RUNTIME_IDENTIFIER=$(/usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" \
+			"$SIM_RUNTIME_ROOT/../../Info.plist" 2>/dev/null) || SIM_RUNTIME_IDENTIFIER=
+	fi
+	if [ -z "${SIM_RUNTIME_IDENTIFIER:-}" ]; then
+		sim_minor=0
+		case $SIM_RUNTIME_VERSION in
+		*.*)
+			sim_minor=${SIM_RUNTIME_VERSION#*.}
+			sim_minor=${sim_minor%%.*}
+			;;
+		esac
+		SIM_RUNTIME_IDENTIFIER=com.apple.CoreSimulator.SimRuntime.iOS-${SIM_RUNTIME_VERSION%%.*}-$sim_minor
+		unset sim_minor
+	fi
+fi
 : "${SIM_UDID:=4C0A1A5E-0000-4000-8000-000000000001}"
 : "${SIM_DEVICE_NAME:=Darling iPhone}"
 # the user and group the device runs as (launchd_sim and everything it starts), as CoreSimulator runs it as the Mac

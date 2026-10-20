@@ -13,7 +13,9 @@
 # launchd_sim and its jobs. They go into Child, which launchd_sim sets over each job's own variables: an extra HOME,
 # say, replaces an app's data container too. SIM_UID and SIM_GID are the user and group the device runs as:
 # launchd_sim, and every process it starts (README.md). SIM_BOOT_TIMEOUT is how long to wait for the boot, in seconds
-# (default: 60). The device's other variables are in simdevice.sh.
+# (default: 60). SIM_DYLD_SHARED_CACHE_DIR is the directory dyld_sim looks in for a cache after the runtime root's
+# (default: CoreSimulator's for the runtime and the host's build; empty: none). The device's other variables are in
+# simdevice.sh.
 #
 # It exits 0 once the device is booted (simdevice.sh's sim_boot_state says booted), 75 when the wait ran out with
 # launchd_sim still in bootstrap mode (a slow host: a longer SIM_BOOT_TIMEOUT may do), and 1 for any other failure; the
@@ -81,12 +83,29 @@ x() {
 	printf '%s' "$1" | sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g'
 }
 
+# the directory of the device's dyld shared cache, as CoreSimulator names it: the runtime's cache for the host's macOS
+# build (sw_vers's; Darling's is "Darling"). dyld_sim takes a cache from the runtime root's own
+# System/Library/Caches/com.apple.dyld first, then from this directory, and with this set never from the prefix's
+# /System/Library/Caches (dyld's CacheFinder). Darling builds no cache here, so a device has one only if its runtime
+# root carries one. SIM_DYLD_SHARED_CACHE_DIR set and empty leaves the variable out, so dyld_sim looks in the prefix's
+# /System/Library/Caches after the runtime root's
+if [ -z "${SIM_DYLD_SHARED_CACHE_DIR+set}" ]; then
+	host_build=$(sw_vers -buildVersion) || host_build=
+	if [ -z "$host_build" ]; then
+		echo "sw_vers -buildVersion gave no build, which the device's dyld cache directory is named after" \
+			"(SIM_DYLD_SHARED_CACHE_DIR sets the directory)" >&2
+		exit 1
+	fi
+	SIM_DYLD_SHARED_CACHE_DIR=/Library/Developer/CoreSimulator/Caches/dyld/$host_build/$SIM_RUNTIME_IDENTIFIER.$SIM_RUNTIME_BUILD_VERSION/
+fi
+
 # the environments CoreSimulator gives launchd_sim's jobs. "Child" is this one: launchd_sim sets it over a job's own
 # EnvironmentVariables. launchd_sim's own environment, "Self", is Child and the defaults below together (a Mac's Self
 # lacks one key of its Child's, VM_KERNEL_PAGE_SIZE_4K, which this Child doesn't set)
 env_child() {
 	cat <<EOF
 <key>DYLD_ROOT_PATH</key><string>$(x "$R")</string>
+<key>PATH</key><string>$(x "$R/usr/bin:$R/bin:$R/usr/sbin:$R/sbin:$R/usr/local/bin")</string>
 <key>SIMULATOR_ROOT</key><string>$(x "$R")</string>
 <key>IPHONE_SIMULATOR_ROOT</key><string>$(x "$R")</string>
 <key>SIMULATOR_RUNTIME_VERSION</key><string>$(x "$SIM_RUNTIME_VERSION")</string>
@@ -109,6 +128,9 @@ EOF
 	for v in $SIM_EXTRA_ENVIRONMENT; do
 		echo "<key>$(x "${v%%=*}")</key><string>$(x "${v#*=}")</string>"
 	done
+	if [ -n "$SIM_DYLD_SHARED_CACHE_DIR" ]; then
+		echo "<key>DYLD_SHARED_CACHE_DIR</key><string>$(x "$SIM_DYLD_SHARED_CACHE_DIR")</string>"
+	fi
 	if [ -n "$SIM_DEVICE_TYPE" ]; then
 		echo "<key>SIMULATOR_CAPABILITIES</key><string>$(x "$SIM_DEVICE_TYPE/Contents/Resources/capabilities.plist")</string>"
 	fi
@@ -119,10 +141,13 @@ EOF
 
 # "ChildDefaults", the jobs' defaults: a job's own EnvironmentVariables override them. The home and temporary directory
 # are defaults in CoreSimulator's launchd_bootstrap.plist: an app's job keeps the data container's, which RunningBoard
-# gives it (from installd's record, through FrontBoard), and a job without its own (a daemon's) gets the device's data
+# gives it (from installd's record, through FrontBoard), and a job without its own (a daemon's) gets the device's data.
+# dyld's fallback paths are the runtime's, as CoreSimulator's are. Each key is in the dict CoreSimulator puts it in
 env_defaults() {
 	cat <<EOF
 <key>CFFIXED_USER_HOME</key><string>$(x "$D")</string>
+<key>DYLD_FALLBACK_FRAMEWORK_PATH</key><string>$(x "$R/System/Library/Frameworks")</string>
+<key>DYLD_FALLBACK_LIBRARY_PATH</key><string>$(x "$R/usr/lib")</string>
 <key>HOME</key><string>$(x "$D")</string>
 <key>TMPDIR</key><string>$(x "$D/tmp/")</string>
 EOF
