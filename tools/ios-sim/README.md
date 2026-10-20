@@ -63,6 +63,18 @@ and `DYLD_FALLBACK_LIBRARY_PATH` (the runtime's `System/Library/Frameworks` and 
 takes a cache from the runtime root's own `System/Library/Caches/com.apple.dyld` first, then from that directory, and
 with it set never from the prefix's `/System/Library/Caches`. Darling builds no cache there, so a device runs without
 one unless its runtime root carries one. `SIM_DYLD_SHARED_CACHE_DIR=` (set, empty) leaves the variable out.
+`Child` also has the rest of a Mac's keys, with the values and paths of the `launchd_bootstrap.plist` CoreSimulator 1051.55
+writes for an iOS 26.5 (23F77) iPhone 16, with the device's own data directory, name, UDID and type
+(`SIM_DEVICE_TYPE_NAME`, and `SIM_CORESIMULATOR_VERSION` for the version, in simdevice.sh). One of them is more than
+environment: launchd_sim replaces the `/var/mobile` a job's `WorkingDirectory`, `KeepAlive` `PathState`, `WatchPaths`
+and `QueueDirectories` paths start with by `IPHONE_SHARED_RESOURCES_DIRECTORY` (the data directory). Without it the
+replacement is `(null)`: a job whose working directory is under `/var/mobile` (nanoregistryd's) fails to start
+with EX_CONFIG, and the path conditions never hold. simboot.sh says which of the runtime's libraries read the others.
+`VM_KERNEL_PAGE_SIZE_4K` is in `Child` alone, as on a Mac, and nothing in the runtime reads it.
+`test/bootstrap-golden.sh` checks the bootstrap against a Mac's, pinned as a golden master (`test/bootstrap.golden`),
+with the differences this device keeps listed in `test/bootstrap.allow`, each with its own value and why. A build
+with the `ios_sim` component runs it and stops if it fails. By hand it runs on a Linux host, without Darling:
+`sh tools/ios-sim/test/bootstrap-golden.sh`.
 `simboot.sh` needs umask 022 (or one that also keeps group and others from writing): `launchctl` skips job plists that
 group or others can write. A `darling shell` has `launchd`'s umask, which `darling` starts with at least 022.
 `launchd_sim` logs to `/private/var/tmp/com.apple.CoreSimulator.SimDevice.<udid>/launchd.log`.

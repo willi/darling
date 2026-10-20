@@ -1,0 +1,102 @@
+# Golden master (deliberate): the launchd_bootstrap.plist CoreSimulator 1051.55 wrote for an iOS 26.5 (23F77) iPhone
+# 16 on a Mac (GitHub runner, macOS arm64; willi/taffy-sdk dispatch run 39338788994), as plist2lines.awk lines,
+# sorted, with the per-machine values replaced: <data> (the device's data directory), <runtime-root>, <host home>,
+# <uuid> (the device's UDID), <device name>, <boot time>, <host build> (the host's macOS build). The bytes are the
+# contract: replace the file only with a new Mac dump, never to match simboot.sh's output.
+# The dump's values were replaced by taffy-sdk's .github/workflows/sim-stock-home.yml (510ddab, its `take` step: every
+# UUID, at path-component boundaries); bootstrap-golden.sh replaces only the test's own values, which agree with it.
+# To regenerate it from that workflow's artifact, put this header over
+#   awk -f plist2lines.awk <artifact>/bootstrap/var-run/launchd_bootstrap.plist | LC_ALL=C sort
+# A new default runtime or device type in simdevice.sh needs a new dump with it.
+AbortOnUnknownIPC	true
+Bootstrap.BinaryOrderPreference	arm64
+Bootstrap.CheckedAllocationsPosixSpawnFlagsGlobal	false
+Bootstrap.Child.DYLD_ROOT_PATH	<runtime-root>
+Bootstrap.Child.DYLD_SHARED_CACHE_DIR	/Library/Developer/CoreSimulator/Caches/dyld/<host build>/com.apple.CoreSimulator.SimRuntime.iOS-26-5.23F77/
+Bootstrap.Child.IPHONE_SHARED_RESOURCES_DIRECTORY	<data>
+Bootstrap.Child.IPHONE_SIMULATOR_ROOT	<runtime-root>
+Bootstrap.Child.IPHONE_TVOUT_EXTENDED_PROPERTIES	<data>/Library/Application Support/Simulator/extended_display.plist
+Bootstrap.Child.LS_ENABLE_BUNDLE_LOCALIZATION_CACHING	1
+Bootstrap.Child.PATH	<runtime-root>/usr/bin:<runtime-root>/bin:<runtime-root>/usr/sbin:<runtime-root>/sbin:<runtime-root>/usr/local/bin
+Bootstrap.Child.SIMULATOR_ARCHS	arm64 x86_64
+Bootstrap.Child.SIMULATOR_AUDIO_DEVICES_PLIST_PATH	<data>/var/run/com.apple.coresimulator.audio.plist
+Bootstrap.Child.SIMULATOR_AUDIO_SETTINGS_PATH	<data>/var/run/simulatoraudio/audiosettings.plist
+Bootstrap.Child.SIMULATOR_BOOT_TIME	<boot time>
+Bootstrap.Child.SIMULATOR_CAPABILITIES	/Library/Developer/CoreSimulator/Profiles/DeviceTypes/iPhone 16.simdevicetype/Contents/Resources/capabilities.plist
+Bootstrap.Child.SIMULATOR_DEVICE_NAME	<device name>
+Bootstrap.Child.SIMULATOR_EXTENDED_DISPLAY_PROPERTIES	<data>/Library/Application Support/Simulator/extended_display.plist
+Bootstrap.Child.SIMULATOR_FRAMEBUFFER_FRAMEWORK	/Library/Developer/PrivateFrameworks/CoreSimulator.framework/Resources/Platforms/iphoneos/Library/PrivateFrameworks/SimFramebuffer.framework/SimFramebuffer
+Bootstrap.Child.SIMULATOR_HID_SYSTEM_MANAGER	/Library/Developer/PrivateFrameworks/CoreSimulator.framework/Resources/Platforms/iphoneos/Library/Frameworks/SimulatorHID.framework
+Bootstrap.Child.SIMULATOR_HOST_HOME	<host home>
+Bootstrap.Child.SIMULATOR_LEGACY_ASSET_SUFFIX	iphone
+Bootstrap.Child.SIMULATOR_LOG_ROOT	<host home>/Library/Logs/CoreSimulator/<uuid>
+Bootstrap.Child.SIMULATOR_MAINSCREEN_HEIGHT	2556
+Bootstrap.Child.SIMULATOR_MAINSCREEN_PITCH	460.000000
+Bootstrap.Child.SIMULATOR_MAINSCREEN_SCALE	3.000000
+Bootstrap.Child.SIMULATOR_MAINSCREEN_WIDTH	1179
+Bootstrap.Child.SIMULATOR_MEMORY_WARNINGS	<data>/var/run/memory_warning_simulation
+Bootstrap.Child.SIMULATOR_MODEL_IDENTIFIER	iPhone17,3
+Bootstrap.Child.SIMULATOR_PRODUCT_CLASS	D47
+Bootstrap.Child.SIMULATOR_ROOT	<runtime-root>
+Bootstrap.Child.SIMULATOR_RUNTIME_BUILD_VERSION	23F77
+Bootstrap.Child.SIMULATOR_RUNTIME_VERSION	26.5
+Bootstrap.Child.SIMULATOR_SHARED_RESOURCES_DIRECTORY	<data>
+Bootstrap.Child.SIMULATOR_UDID	<uuid>
+Bootstrap.Child.SIMULATOR_VERSION_INFO	CoreSimulator 1051.55 - Device: <device name> (<uuid>) - Runtime: iOS 26.5 (23F77) - DeviceType: iPhone 16
+Bootstrap.Child.VM_KERNEL_PAGE_SIZE_4K	1
+Bootstrap.Child.XPC_SIMULATOR_LAUNCHD_NAME	com.apple.CoreSimulator.SimDevice.<uuid>
+Bootstrap.ChildDefaults.CFFIXED_USER_HOME	<data>
+Bootstrap.ChildDefaults.DYLD_FALLBACK_FRAMEWORK_PATH	<runtime-root>/System/Library/Frameworks
+Bootstrap.ChildDefaults.DYLD_FALLBACK_LIBRARY_PATH	<runtime-root>/usr/lib
+Bootstrap.ChildDefaults.HOME	<data>
+Bootstrap.ChildDefaults.TMPDIR	<data>/tmp/
+Bootstrap.Paths[0]	<runtime-root>/System/Library/LaunchDaemons
+Bootstrap.Paths[1]	<runtime-root>/System/Library/LaunchAngels
+Bootstrap.Paths[2]	<runtime-root>/Developer/Library/LaunchDaemons
+Bootstrap.Paths[3]	<data>/Library/LaunchDaemons
+Bootstrap.Self.CFFIXED_USER_HOME	<data>
+Bootstrap.Self.DYLD_FALLBACK_FRAMEWORK_PATH	<runtime-root>/System/Library/Frameworks
+Bootstrap.Self.DYLD_FALLBACK_LIBRARY_PATH	<runtime-root>/usr/lib
+Bootstrap.Self.DYLD_ROOT_PATH	<runtime-root>
+Bootstrap.Self.DYLD_SHARED_CACHE_DIR	/Library/Developer/CoreSimulator/Caches/dyld/<host build>/com.apple.CoreSimulator.SimRuntime.iOS-26-5.23F77/
+Bootstrap.Self.HOME	<data>
+Bootstrap.Self.IPHONE_SHARED_RESOURCES_DIRECTORY	<data>
+Bootstrap.Self.IPHONE_SIMULATOR_ROOT	<runtime-root>
+Bootstrap.Self.IPHONE_TVOUT_EXTENDED_PROPERTIES	<data>/Library/Application Support/Simulator/extended_display.plist
+Bootstrap.Self.LS_ENABLE_BUNDLE_LOCALIZATION_CACHING	1
+Bootstrap.Self.PATH	<runtime-root>/usr/bin:<runtime-root>/bin:<runtime-root>/usr/sbin:<runtime-root>/sbin:<runtime-root>/usr/local/bin
+Bootstrap.Self.SIMULATOR_ARCHS	arm64 x86_64
+Bootstrap.Self.SIMULATOR_AUDIO_DEVICES_PLIST_PATH	<data>/var/run/com.apple.coresimulator.audio.plist
+Bootstrap.Self.SIMULATOR_AUDIO_SETTINGS_PATH	<data>/var/run/simulatoraudio/audiosettings.plist
+Bootstrap.Self.SIMULATOR_BOOT_TIME	<boot time>
+Bootstrap.Self.SIMULATOR_CAPABILITIES	/Library/Developer/CoreSimulator/Profiles/DeviceTypes/iPhone 16.simdevicetype/Contents/Resources/capabilities.plist
+Bootstrap.Self.SIMULATOR_DEVICE_NAME	<device name>
+Bootstrap.Self.SIMULATOR_EXTENDED_DISPLAY_PROPERTIES	<data>/Library/Application Support/Simulator/extended_display.plist
+Bootstrap.Self.SIMULATOR_FRAMEBUFFER_FRAMEWORK	/Library/Developer/PrivateFrameworks/CoreSimulator.framework/Resources/Platforms/iphoneos/Library/PrivateFrameworks/SimFramebuffer.framework/SimFramebuffer
+Bootstrap.Self.SIMULATOR_HID_SYSTEM_MANAGER	/Library/Developer/PrivateFrameworks/CoreSimulator.framework/Resources/Platforms/iphoneos/Library/Frameworks/SimulatorHID.framework
+Bootstrap.Self.SIMULATOR_HOST_HOME	<host home>
+Bootstrap.Self.SIMULATOR_LEGACY_ASSET_SUFFIX	iphone
+Bootstrap.Self.SIMULATOR_LOG_ROOT	<host home>/Library/Logs/CoreSimulator/<uuid>
+Bootstrap.Self.SIMULATOR_MAINSCREEN_HEIGHT	2556
+Bootstrap.Self.SIMULATOR_MAINSCREEN_PITCH	460.000000
+Bootstrap.Self.SIMULATOR_MAINSCREEN_SCALE	3.000000
+Bootstrap.Self.SIMULATOR_MAINSCREEN_WIDTH	1179
+Bootstrap.Self.SIMULATOR_MEMORY_WARNINGS	<data>/var/run/memory_warning_simulation
+Bootstrap.Self.SIMULATOR_MODEL_IDENTIFIER	iPhone17,3
+Bootstrap.Self.SIMULATOR_PRODUCT_CLASS	D47
+Bootstrap.Self.SIMULATOR_ROOT	<runtime-root>
+Bootstrap.Self.SIMULATOR_RUNTIME_BUILD_VERSION	23F77
+Bootstrap.Self.SIMULATOR_RUNTIME_VERSION	26.5
+Bootstrap.Self.SIMULATOR_SHARED_RESOURCES_DIRECTORY	<data>
+Bootstrap.Self.SIMULATOR_UDID	<uuid>
+Bootstrap.Self.SIMULATOR_VERSION_INFO	CoreSimulator 1051.55 - Device: <device name> (<uuid>) - Runtime: iOS 26.5 (23F77) - DeviceType: iPhone 16
+Bootstrap.Self.TMPDIR	<data>/tmp/
+Bootstrap.Self.XPC_SIMULATOR_LAUNCHD_NAME	com.apple.CoreSimulator.SimDevice.<uuid>
+Bootstrap.SimulatorRuntimeRoot	<runtime-root>
+CrashOnSIGTERMTimeout	false
+ExtensionWatchdog	0
+LogServiceLifecycle	true
+LogToFlatFile	true
+RequireDomainBinding	true
+SIGTERMTimeout	3
+UseGuardMalloc	false

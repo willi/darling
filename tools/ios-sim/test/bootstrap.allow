@@ -1,0 +1,43 @@
+# Where simboot.sh's bootstrap differs from the golden master (bootstrap.golden): one path per line with the value it
+# has here, after the placeholders ("(missing)": not set), and why in the comment above it. bootstrap-golden.sh fails
+# on another value, and on an entry the bootstrap no longer needs.
+#
+# Darling's own: with it set, the device's IOKit looks up simiokitd (com.apple.iokitsimd) instead of a kernel's IOKit
+Bootstrap.Child.IOS_SIMULATOR_IOKITSIMD	1
+Bootstrap.Self.IOS_SIMULATOR_IOKITSIMD	1
+# from the caller and the device type, which the test doesn't have: the HID system manager is the caller's
+# (SIM_EXTRA_ENVIRONMENT), the legacy asset suffix comes from the device type's profile.plist environment
+Bootstrap.Child.SIMULATOR_HID_SYSTEM_MANAGER	(missing)
+Bootstrap.Self.SIMULATOR_HID_SYSTEM_MANAGER	(missing)
+Bootstrap.Child.SIMULATOR_LEGACY_ASSET_SUFFIX	(missing)
+Bootstrap.Self.SIMULATOR_LEGACY_ASSET_SUFFIX	(missing)
+# the Mac runner is arm64 and its devices run arm64 and x86_64 apps; this device runs x86_64 only
+Bootstrap.Child.SIMULATOR_ARCHS	x86_64
+Bootstrap.Self.SIMULATOR_ARCHS	x86_64
+# the device keeps launchd_sim's and its jobs' logs in its data directory; a Mac's go to the host's
+# ~/Library/Logs/CoreSimulator/<uuid>
+Bootstrap.Child.SIMULATOR_LOG_ROOT	<data>/Library/Logs
+Bootstrap.Self.SIMULATOR_LOG_ROOT	<data>/Library/Logs
+# the same numbers: CoreSimulator writes the screen's scale and pitch with six decimals (3.000000), simdevice.sh as
+# the device type's capabilities give them (3)
+Bootstrap.Child.SIMULATOR_MAINSCREEN_PITCH	460
+Bootstrap.Self.SIMULATOR_MAINSCREEN_PITCH	460
+Bootstrap.Child.SIMULATOR_MAINSCREEN_SCALE	3
+Bootstrap.Self.SIMULATOR_MAINSCREEN_SCALE	3
+# not set yet. The device loads only SIM_DAEMONS, from one directory of links (Paths[0]), where a Mac gives
+# launchd_sim the runtime's job directories and the keys that go with them; AbortOnUnknownIPC and
+# RequireDomainBinding wait until a boot shows them safe with Darling's IPC
+AbortOnUnknownIPC	(missing)
+CrashOnSIGTERMTimeout	(missing)
+ExtensionWatchdog	(missing)
+LogServiceLifecycle	(missing)
+LogToFlatFile	(missing)
+RequireDomainBinding	(missing)
+SIGTERMTimeout	(missing)
+UseGuardMalloc	(missing)
+Bootstrap.BinaryOrderPreference	(missing)
+Bootstrap.CheckedAllocationsPosixSpawnFlagsGlobal	(missing)
+Bootstrap.Paths[0]	<data>/var/run/LaunchDaemons
+Bootstrap.Paths[1]	(missing)
+Bootstrap.Paths[2]	(missing)
+Bootstrap.Paths[3]	(missing)
