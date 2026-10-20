@@ -3,6 +3,11 @@
 # sorted, with the per-machine values replaced: <data> (the device's data directory), <runtime-root>, <host home>,
 # <uuid> (the device's UDID), <device name>, <boot time>, <host build> (the host's macOS build). The bytes are the
 # contract: replace the file only with a new Mac dump, never to match simboot.sh's output.
+# The dump's values were replaced by taffy-sdk's .github/workflows/sim-stock-home.yml (510ddab, its `take` step: every
+# UUID, at path-component boundaries); bootstrap-golden.sh replaces only the test's own values, which agree with it.
+# To regenerate it from that workflow's artifact, put this header over
+#   awk -f plist2lines.awk <artifact>/bootstrap/var-run/launchd_bootstrap.plist | LC_ALL=C sort
+# A new default runtime or device type in simdevice.sh needs a new dump with it.
 AbortOnUnknownIPC	true
 Bootstrap.BinaryOrderPreference	arm64
 Bootstrap.CheckedAllocationsPosixSpawnFlagsGlobal	false

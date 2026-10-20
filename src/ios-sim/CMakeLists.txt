@@ -32,7 +32,7 @@ install(FILES ${CMAKE_SOURCE_DIR}/tools/ios-sim/simdevice.sh DESTINATION libexec
 
 # The bootstrap simboot.sh writes, against a Mac's (tools/ios-sim/test/bootstrap-golden.sh, README.md): a key missing
 # or wrong there fails no boot, only jobs inside the device, out of sight, so it fails the build instead. It runs
-# simboot.sh with launchctl stubbed, in a second, and again only when the scripts or the golden master change.
+# simboot.sh with launchctl stubbed, in about a second, and again only when the scripts or the golden master change.
 set(ios_sim_test ${CMAKE_SOURCE_DIR}/tools/ios-sim/test)
 add_custom_command(
 	OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/bootstrap-golden.stamp
