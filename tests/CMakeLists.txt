@@ -66,5 +66,6 @@ darling_test(kprintf_cost)
 # it asks darlingserver itself whether kprintf strings are logged
 target_include_directories(kprintf_cost PRIVATE ${CMAKE_BINARY_DIR}/src/external/darlingserver/include)
 add_dependencies(kprintf_cost generate_dserver_rpc_wrappers)
+darling_test(fork_uniqueid)
 
 install(PROGRAMS run-all.sh DESTINATION libexec/darling/usr/libexec/darling-tests)
