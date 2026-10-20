@@ -16,7 +16,9 @@ if [ $# -gt 0 ]; then
 	echo "usage: $0" >&2
 	exit 64
 fi
+# the IOKit job goes on every way out: one left loaded makes the next boot's IOKit load "Already loaded"
 if ! launchctl list "$SIM_DEVICE_JOB_LABEL" >/dev/null 2>&1; then
+	launchctl unload "$SIM_IOKIT_JOB" 2>/dev/null || true
 	echo "$SIM_DEVICE_JOB_LABEL is not booted" >&2
 	exit 0
 fi
@@ -26,6 +28,7 @@ launchctl unload "$SIM_DEVICE_JOB" &
 sim_wait_start
 while launchctl list "$SIM_DEVICE_JOB_LABEL" >/dev/null 2>&1; do
 	if [ "$SIM_WAITED" -gt "$SIM_SHUTDOWN_TIMEOUT" ]; then
+		launchctl unload "$SIM_IOKIT_JOB" 2>/dev/null || true
 		echo "$SIM_DEVICE_JOB_LABEL didn't shut down in ${SIM_SHUTDOWN_TIMEOUT}s; see $SIM_DEVICE_LOG" >&2
 		exit 1
 	fi
