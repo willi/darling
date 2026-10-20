@@ -47,22 +47,25 @@ int main(void)
 
 	if (mkdtemp(dir) == NULL)
 	{
-		perror("mkdtemp");
-		return 1;
+		check(0, "setup: mkdtemp", errno);
+		return failed;
 	}
 	snprintf(a, sizeof(a), "%s/a", dir);
 	snprintf(b, sizeof(b), "%s/b", dir);
 	if (symlink(b, a) != 0 || symlink(a, b) != 0)
 	{
-		perror("symlink");
-		return 1;
+		check(0, "setup: symlink", errno);
+		goto out;
 	}
 
 	int err = spawn(a, 0);
 	check(err == ELOOP, "a spawn of a symlink loop fails with ELOOP", err);
+	// a SETEXEC spawn that doesn't return (it exec'd, or ended) must not take the line above with it
+	fflush(stdout);
 	err = spawn(a, POSIX_SPAWN_SETEXEC);
 	check(err == ELOOP, "a POSIX_SPAWN_SETEXEC spawn of a symlink loop fails with ELOOP", err);
 
+out:
 	unlink(a);
 	unlink(b);
 	rmdir(dir);
