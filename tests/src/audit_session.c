@@ -143,8 +143,7 @@ int main(int argc, char** argv)
 	s.ai_termid.at_type = AU_IPv4;
 	s.ai_asid = AU_ASSIGN_ASID;
 	check(setaudit_addr(&s, sizeof(s)) == 0, "root sets a new session");
-	check(s.ai_asid >= 100000, "the assigned session ID is 100000 or more, as XNU's");
-	check(s.ai_auid == 501, "setaudit_addr() hands back the session it assigned");
+	check(s.ai_asid >= 100000, "setaudit_addr() hands back the assigned session ID, 100000 or more, as XNU's");
 	t = own_token();
 	check(TOKEN_AUID(t) == 501 && TOKEN_ASID(t) == s.ai_asid, "the token follows the session");
 

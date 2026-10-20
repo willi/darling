@@ -12,8 +12,12 @@
  * a session ID the kernel assigns (from 100000 up), terminal ID none. CoreSimulator runs the device's launchd_sim in
  * that session, so every device process carries it in its audit token (auid 501 and the session's asid, where a
  * process outside any session has AU_DEFAUDITID). Only root can set one, so it comes before the uid. Each simasuid
- * starts its own session, where a Mac's host-side clients all share the login's; nothing that checks a caller here
- * compares session IDs.
+ * starts its own session, where a Mac's host-side clients all share the login's. The device's own processes share one
+ * (launchd_sim's); whether anything compares a device process's session ID with a host-side client's hasn't been
+ * checked, and isn't known to matter.
+ *
+ * A device booted as root (uid 0 and gid 0) doesn't go through simasuid (simboot.sh adds it only for another uid or
+ * gid), so its processes run outside any session, as a Mac's system daemons do.
  *
  * From willi/kage's sim/asuid (d8c0d15), which runs a Mac program as a device's user from inside a device. This one
  * is a Mac program itself, so it leaves DYLD_ROOT_PATH as it is.
