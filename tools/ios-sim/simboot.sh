@@ -33,6 +33,13 @@ D="$SIM_DEVICE_DATA"
 NAME="$SIM_DEVICE_JOB_LABEL"
 JOB="$SIM_DEVICE_JOB"
 LOG="$SIM_DEVICE_LOG"
+# the device type's name, as SIMULATOR_VERSION_INFO gives it: its bundle's (iPhone 16.simdevicetype), else the default
+# model's
+TYPE_NAME=${SIM_DEVICE_TYPE%/}
+TYPE_NAME=${TYPE_NAME##*/}
+TYPE_NAME=${TYPE_NAME%.simdevicetype}
+: "${TYPE_NAME:=iPhone 16}"
+BOOT_TIME=$(date +%s)
 
 if [ $# -gt 0 ]; then
 	echo "usage: SIM_RUNTIME_ROOT=<RuntimeRoot> $0" >&2
@@ -100,8 +107,24 @@ if [ -z "${SIM_DYLD_SHARED_CACHE_DIR+set}" ]; then
 fi
 
 # the environments CoreSimulator gives launchd_sim's jobs. "Child" is this one: launchd_sim sets it over a job's own
-# EnvironmentVariables. launchd_sim's own environment, "Self", is Child and the defaults below together (a Mac's Self
-# lacks one key of its Child's, VM_KERNEL_PAGE_SIZE_4K, which this Child doesn't set)
+# EnvironmentVariables. launchd_sim's own environment, "Self", is Child and the defaults below together, as a Mac's
+# (whose Self lacks one key of its Child's, VM_KERNEL_PAGE_SIZE_4K, which is in Child alone here too). The keys are a
+# Mac's, with its values and paths (README.md):
+# - IPHONE_SHARED_RESOURCES_DIRECTORY, the data directory: launchd_sim reads it from Child and puts it in front of
+#   every /var/mobile/ path of a job (WorkingDirectory, KeepAlive PathState, WatchPaths, QueueDirectories). Without
+#   it the front is "(null)": a job whose working directory is under /var/mobile can't start, and path conditions
+#   never hold. syslogd and libAccessibility read it too.
+# - SIMULATOR_EXTENDED_DISPLAY_PROPERTIES and IPHONE_TVOUT_EXTENDED_PROPERTIES, the extended display's plist:
+#   backboardd, BackBoardServices and UIKitCore read the first.
+# - SIMULATOR_AUDIO_SETTINGS_PATH (AudioToolbox, AudioSession) and SIMULATOR_AUDIO_DEVICES_PLIST_PATH, the audio
+#   settings and devices in the device's var/run. A Mac's CoreSimulator writes the devices plist before the boot;
+#   simboot writes none of these three files, whose contents the oracle doesn't show.
+# - SIMULATOR_MEMORY_WARNINGS (libdispatch), a file simboot makes empty, as a Mac's CoreSimulator does.
+# - SIMULATOR_VERSION_INFO (libsystem_sim_platform, libsystem_trace): CoreSimulator's version (the oracle's), the
+#   device, the runtime and the device type.
+# - LS_ENABLE_BUNDLE_LOCALIZATION_CACHING (LaunchServices).
+# - SIMULATOR_BOOT_TIME, when simboot writes the bootstrap (seconds since 1970). Nothing in the runtime reads it.
+# - VM_KERNEL_PAGE_SIZE_4K, in Child alone. Nothing in the runtime reads it: it's here to match a Mac's environment.
 env_child() {
 	cat <<EOF
 <key>DYLD_ROOT_PATH</key><string>$(x "$R")</string>
@@ -115,6 +138,7 @@ env_child() {
 <key>SIMULATOR_MODEL_IDENTIFIER</key><string>$(x "$SIM_MODEL_IDENTIFIER")</string>
 <key>SIMULATOR_PRODUCT_CLASS</key><string>$(x "$SIM_PRODUCT_CLASS")</string>
 <key>SIMULATOR_ARCHS</key><string>$(x "$SIM_ARCHS")</string>
+<key>IPHONE_SHARED_RESOURCES_DIRECTORY</key><string>$(x "$D")</string>
 <key>SIMULATOR_SHARED_RESOURCES_DIRECTORY</key><string>$(x "$D")</string>
 <key>SIMULATOR_LOG_ROOT</key><string>$(x "$D/Library/Logs")</string>
 <key>SIMULATOR_HOST_HOME</key><string>$(x "$HOME")</string>
@@ -124,6 +148,14 @@ env_child() {
 <key>SIMULATOR_MAINSCREEN_SCALE</key><string>$(x "$SIM_SCREEN_SCALE")</string>
 <key>SIMULATOR_MAINSCREEN_PITCH</key><string>$(x "$SIM_SCREEN_PITCH")</string>
 <key>IOS_SIMULATOR_IOKITSIMD</key><string>1</string>
+<key>SIMULATOR_EXTENDED_DISPLAY_PROPERTIES</key><string>$(x "$D/Library/Application Support/Simulator/extended_display.plist")</string>
+<key>IPHONE_TVOUT_EXTENDED_PROPERTIES</key><string>$(x "$D/Library/Application Support/Simulator/extended_display.plist")</string>
+<key>SIMULATOR_AUDIO_SETTINGS_PATH</key><string>$(x "$D/var/run/simulatoraudio/audiosettings.plist")</string>
+<key>SIMULATOR_AUDIO_DEVICES_PLIST_PATH</key><string>$(x "$D/var/run/com.apple.coresimulator.audio.plist")</string>
+<key>SIMULATOR_MEMORY_WARNINGS</key><string>$(x "$D/var/run/memory_warning_simulation")</string>
+<key>SIMULATOR_VERSION_INFO</key><string>$(x "CoreSimulator 1051.55 - Device: $SIM_DEVICE_NAME ($SIM_UDID) - Runtime: iOS $SIM_RUNTIME_VERSION ($SIM_RUNTIME_BUILD_VERSION) - DeviceType: $TYPE_NAME")</string>
+<key>LS_ENABLE_BUNDLE_LOCALIZATION_CACHING</key><string>1</string>
+<key>SIMULATOR_BOOT_TIME</key><string>$BOOT_TIME</string>
 EOF
 	for v in $SIM_EXTRA_ENVIRONMENT; do
 		echo "<key>$(x "${v%%=*}")</key><string>$(x "${v#*=}")</string>"
@@ -155,6 +187,8 @@ EOF
 
 # a device booted before keeps its job files, and with them their modes: they're written anew with this umask
 rm -f "$D/var/run/launchd_bootstrap.plist" "$JOB" "$SIM_IOKIT_JOB"
+# the memory-warning file a Mac's CoreSimulator makes before the boot, empty
+: >"$D/var/run/memory_warning_simulation"
 
 # launchd_sim reads everything but the environments from inside the Bootstrap dictionary too: with Paths at the top
 # level, it loads no jobs. In Self, Child comes after the defaults: a plist key given twice (an extra HOME) has its last
@@ -165,7 +199,7 @@ cat >"$D/var/run/launchd_bootstrap.plist" <<EOF
 <plist version="1.0"><dict>
 <key>Bootstrap</key><dict>
 <key>Self</key><dict>$(env_defaults)$(env_child)</dict>
-<key>Child</key><dict>$(env_child)</dict>
+<key>Child</key><dict>$(env_child)<key>VM_KERNEL_PAGE_SIZE_4K</key><string>1</string></dict>
 <key>ChildDefaults</key><dict>$(env_defaults)</dict>
 <key>Paths</key><array><string>$(x "$D/var/run/LaunchDaemons")</string></array>
 <key>SimulatorRuntimeRoot</key><string>$(x "$R")</string>
