@@ -80,9 +80,25 @@ for label in $SIM_DAEMONS; do
 	ln -s "$R/System/Library/LaunchDaemons/$label.plist" "$D/var/run/LaunchDaemons/"
 done
 
+# The job files below are heredocs, and each value in them is a $(...): a program that fails there (a sed that doesn't
+# start) leaves its value empty, and set -e doesn't see it. One such left the device job's Label empty, and launchd
+# refused the job, so the boot waited out its timeout for a launchd_sim that never started (B44). Each program that
+# runs in one marks its failure in this file, and every job file is checked for it once it is written.
+SUBST_FAILED="$D/var/run/simboot-subst-failed"
+rm -f "$SUBST_FAILED"
+
+# fails the boot when a program in a $(...) failed while simboot.sh wrote $1
+check_written() {
+	if [ -e "$SUBST_FAILED" ]; then
+		rm -f "$SUBST_FAILED"
+		echo "a program failed while simboot.sh wrote $1 (its message is above); not loading the device from it" >&2
+		exit 1
+	fi
+}
+
 # a value as plist XML text
 x() {
-	printf '%s' "$1" | sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g'
+	printf '%s' "$1" | sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g' || : >"$SUBST_FAILED"
 }
 
 # the directory of the device's dyld shared cache, as CoreSimulator names it: the runtime's cache for the host's macOS
@@ -123,7 +139,7 @@ fi
 # - SIMULATOR_BOOT_TIME, when simboot writes the bootstrap (seconds since 1970). Nothing in the runtime reads it.
 # - VM_KERNEL_PAGE_SIZE_4K, in Child alone. Nothing in the runtime reads it: it's here to match a Mac's environment.
 env_child() {
-	cat <<EOF
+	cat <<EOF || : >"$SUBST_FAILED"
 <key>DYLD_ROOT_PATH</key><string>$(x "$R")</string>
 <key>PATH</key><string>$(x "$R/usr/bin:$R/bin:$R/usr/sbin:$R/sbin:$R/usr/local/bin")</string>
 <key>SIMULATOR_ROOT</key><string>$(x "$R")</string>
@@ -173,7 +189,7 @@ EOF
 # gives it (from installd's record, through FrontBoard), and a job without its own (a daemon's) gets the device's data.
 # dyld's fallback paths are the runtime's, as CoreSimulator's are. Each key is in the dict CoreSimulator puts it in
 env_defaults() {
-	cat <<EOF
+	cat <<EOF || : >"$SUBST_FAILED"
 <key>CFFIXED_USER_HOME</key><string>$(x "$D")</string>
 <key>DYLD_FALLBACK_FRAMEWORK_PATH</key><string>$(x "$R/System/Library/Frameworks")</string>
 <key>DYLD_FALLBACK_LIBRARY_PATH</key><string>$(x "$R/usr/lib")</string>
@@ -203,6 +219,7 @@ cat >"$BOOTSTRAP" <<EOF
 </dict>
 </dict></plist>
 EOF
+check_written "$BOOTSTRAP"
 
 # the job CoreSimulator submits (to the domain of the user who boots the device, so launchd_sim runs as that user):
 # the trampoline checks the device's name in and becomes launchd_sim. Darling's launchd runs its jobs as root, so a
@@ -227,6 +244,7 @@ cat >"$JOB" <<EOF
 <key>StandardErrorPath</key><string>$(x "$D/Library/Logs/launchd_sim.log")</string>
 </dict></plist>
 EOF
+check_written "$JOB"
 
 # Darling has no kernel IOKit for the device's IOKit to talk to, as a Mac does: with IOS_SIMULATOR_IOKITSIMD set, the
 # device's IOKit looks up com.apple.iokitsimd instead, which simiokitd registers in the device once it is up.
@@ -246,10 +264,21 @@ cat >"$SIM_IOKIT_JOB" <<EOF
 <key>StandardErrorPath</key><string>$(x "$SIM_IOKIT_LOG")</string>
 </dict></plist>
 EOF
+check_written "$SIM_IOKIT_JOB"
 
 rm -f "$LOG" "$SIM_IOKIT_LOG"
+# launchctl load exits 0 when launchd refuses a job (it only prints why), so each job is looked up after it: a
+# device that can't start fails here, not at the end of the wait
 launchctl load "$JOB"
+if ! launchctl list "$NAME" >/dev/null 2>&1; then
+	echo "launchd didn't load $JOB (launchctl's message is above)" >&2
+	exit 1
+fi
 launchctl load "$SIM_IOKIT_JOB"
+if ! launchctl list "$SIM_IOKIT_JOB_LABEL" >/dev/null 2>&1; then
+	echo "launchd didn't load $SIM_IOKIT_JOB (launchctl's message is above); simshutdown.sh stops $NAME" >&2
+	exit 1
+fi
 
 # booted once launchd_sim has left bootstrap mode and simiokitd has registered the device's IOKit in it (a daemon that
 # asks IOKit before then gets no answer). The timeout is in seconds, not passes: each grep is a process start, which a
