@@ -80,25 +80,30 @@ for label in $SIM_DAEMONS; do
 	ln -s "$R/System/Library/LaunchDaemons/$label.plist" "$D/var/run/LaunchDaemons/"
 done
 
-# The job files below are heredocs, and each value in them is a $(...): a program that fails there (a sed that doesn't
-# start) leaves its value empty, and set -e doesn't see it. One such left the device job's Label empty, and launchd
-# refused the job, so the boot waited out its timeout for a launchd_sim that never started (B44). Each program that
-# runs in one marks its failure in this file, and every job file is checked for it once it is written.
-SUBST_FAILED="$D/var/run/simboot-subst-failed"
-rm -f "$SUBST_FAILED"
-
-# fails the boot when a program in a $(...) failed while simboot.sh wrote $1
-check_written() {
-	if [ -e "$SUBST_FAILED" ]; then
-		rm -f "$SUBST_FAILED"
-		echo "a program failed while simboot.sh wrote $1 (its message is above); not loading the device from it" >&2
-		exit 1
-	fi
-}
+# The job files below are heredocs, and each value in them is a $(...). set -e doesn't see a program that fails in one:
+# a sed that didn't start once left the device job's Label empty, launchd refused the job, and the boot waited out its
+# timeout for a launchd_sim that never started (B44: mldr failing at exec). So nothing in those values starts a
+# program: x and env_* use shell builtins alone (a $(...) of builtins forks, but execs nothing), and a new value must
+# keep to that.
 
 # a value as plist XML text
 x() {
-	printf '%s' "$1" | sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g' || : >"$SUBST_FAILED"
+	x_s=$1 x_out=
+	while :; do
+		case $x_s in
+		*[\&\<\>]*) ;;
+		*) break ;;
+		esac
+		x_pre=${x_s%%[\&\<\>]*}
+		x_s=${x_s#"$x_pre"}
+		case $x_s in
+		\&*) x_out=$x_out$x_pre'&amp;' ;;
+		\<*) x_out=$x_out$x_pre'&lt;' ;;
+		*) x_out=$x_out$x_pre'&gt;' ;;
+		esac
+		x_s=${x_s#?}
+	done
+	printf '%s' "$x_out$x_s"
 }
 
 # the directory of the device's dyld shared cache, as CoreSimulator names it: the runtime's cache for the host's macOS
@@ -139,7 +144,7 @@ fi
 # - SIMULATOR_BOOT_TIME, when simboot writes the bootstrap (seconds since 1970). Nothing in the runtime reads it.
 # - VM_KERNEL_PAGE_SIZE_4K, in Child alone. Nothing in the runtime reads it: it's here to match a Mac's environment.
 env_child() {
-	cat <<EOF || : >"$SUBST_FAILED"
+	printf '%s\n' "\
 <key>DYLD_ROOT_PATH</key><string>$(x "$R")</string>
 <key>PATH</key><string>$(x "$R/usr/bin:$R/bin:$R/usr/sbin:$R/sbin:$R/usr/local/bin")</string>
 <key>SIMULATOR_ROOT</key><string>$(x "$R")</string>
@@ -168,8 +173,7 @@ env_child() {
 <key>SIMULATOR_MEMORY_WARNINGS</key><string>$(x "$D/var/run/memory_warning_simulation")</string>
 <key>SIMULATOR_VERSION_INFO</key><string>$(x "CoreSimulator $SIM_CORESIMULATOR_VERSION - Device: $SIM_DEVICE_NAME ($SIM_UDID) - Runtime: iOS $SIM_RUNTIME_VERSION ($SIM_RUNTIME_BUILD_VERSION) - DeviceType: $SIM_DEVICE_TYPE_NAME")</string>
 <key>LS_ENABLE_BUNDLE_LOCALIZATION_CACHING</key><string>1</string>
-<key>SIMULATOR_BOOT_TIME</key><string>$BOOT_TIME</string>
-EOF
+<key>SIMULATOR_BOOT_TIME</key><string>$BOOT_TIME</string>"
 	for v in $SIM_EXTRA_ENVIRONMENT; do
 		echo "<key>$(x "${v%%=*}")</key><string>$(x "${v#*=}")</string>"
 	done
@@ -189,13 +193,12 @@ EOF
 # gives it (from installd's record, through FrontBoard), and a job without its own (a daemon's) gets the device's data.
 # dyld's fallback paths are the runtime's, as CoreSimulator's are. Each key is in the dict CoreSimulator puts it in
 env_defaults() {
-	cat <<EOF || : >"$SUBST_FAILED"
+	printf '%s\n' "\
 <key>CFFIXED_USER_HOME</key><string>$(x "$D")</string>
 <key>DYLD_FALLBACK_FRAMEWORK_PATH</key><string>$(x "$R/System/Library/Frameworks")</string>
 <key>DYLD_FALLBACK_LIBRARY_PATH</key><string>$(x "$R/usr/lib")</string>
 <key>HOME</key><string>$(x "$D")</string>
-<key>TMPDIR</key><string>$(x "$D/tmp/")</string>
-EOF
+<key>TMPDIR</key><string>$(x "$D/tmp/")</string>"
 }
 
 # a device booted before keeps its job files, and with them their modes: they're written anew with this umask
@@ -219,7 +222,6 @@ cat >"$BOOTSTRAP" <<EOF
 </dict>
 </dict></plist>
 EOF
-check_written "$BOOTSTRAP"
 
 # the job CoreSimulator submits (to the domain of the user who boots the device, so launchd_sim runs as that user):
 # the trampoline checks the device's name in and becomes launchd_sim. Darling's launchd runs its jobs as root, so a
@@ -244,7 +246,6 @@ cat >"$JOB" <<EOF
 <key>StandardErrorPath</key><string>$(x "$D/Library/Logs/launchd_sim.log")</string>
 </dict></plist>
 EOF
-check_written "$JOB"
 
 # Darling has no kernel IOKit for the device's IOKit to talk to, as a Mac does: with IOS_SIMULATOR_IOKITSIMD set, the
 # device's IOKit looks up com.apple.iokitsimd instead, which simiokitd registers in the device once it is up.
@@ -264,25 +265,26 @@ cat >"$SIM_IOKIT_JOB" <<EOF
 <key>StandardErrorPath</key><string>$(x "$SIM_IOKIT_LOG")</string>
 </dict></plist>
 EOF
-check_written "$SIM_IOKIT_JOB"
 
 rm -f "$LOG" "$SIM_IOKIT_LOG"
-# launchctl load exits 0 when launchd refuses a job (it only prints why), so each job is looked up after it: a
-# device that can't start fails here, not at the end of the wait
-# (list's own errors aren't hidden: a list that couldn't start says so above, and the job may be loaded after all)
-launchctl load "$JOB"
-if ! launchctl list "$NAME" >/dev/null; then
-	echo "launchd didn't load $JOB (launchctl's message is above); simshutdown.sh stops $NAME if it is loaded" >&2
-	exit 1
-fi
-# an IOKit job left loaded by an earlier boot that stopped here would make the load "Already loaded" and the lookup
-# below pass, and the boot would then wait for a simiokitd that never runs: unload it first (it has the same label)
+# an IOKit job still loaded without its device (left by a simboot.sh from before the lookups below, or by a crash)
+# would make its load "Already loaded" and its lookup pass, and the boot would wait for a simiokitd that never runs:
+# unloaded before anything of this boot is loaded (it has the same label)
 launchctl unload "$SIM_IOKIT_JOB" 2>/dev/null || true
-launchctl load "$SIM_IOKIT_JOB"
-if ! launchctl list "$SIM_IOKIT_JOB_LABEL" >/dev/null; then
-	echo "launchd didn't load $SIM_IOKIT_JOB (launchctl's message is above); simshutdown.sh stops $NAME" >&2
-	exit 1
-fi
+
+# load_job PLIST LABEL: launchctl load exits 0 when launchd refuses a job (it only prints why), so the job is looked up
+# after it, and a device that can't start fails here, not at the end of the wait. list's own errors aren't hidden: a
+# list that couldn't start says so above, and the job may be loaded after all.
+load_job() {
+	launchctl load "$1"
+	if ! launchctl list "$2" >/dev/null; then
+		echo "simshutdown.sh stops what of the device is loaded" >&2
+		echo "launchd didn't load $1 (launchctl's message is above)" >&2
+		exit 1
+	fi
+}
+load_job "$JOB" "$NAME"
+load_job "$SIM_IOKIT_JOB" "$SIM_IOKIT_JOB_LABEL"
 
 # booted once launchd_sim has left bootstrap mode and simiokitd has registered the device's IOKit in it (a daemon that
 # asks IOKit before then gets no answer). The timeout is in seconds, not passes: each grep is a process start, which a

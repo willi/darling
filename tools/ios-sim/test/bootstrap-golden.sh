@@ -15,12 +15,10 @@ mkdir -p "$w/stub" "$w/rt/System/Library/LaunchDaemons" "$w/data" "$w/home"
 for v in $(env | sed -n 's/^\(SIM_[A-Za-z0-9_]*\)=.*/\1/p'); do unset "$v"; done
 HOME=$w/home
 export HOME
-# shellcheck disable=SC2016 # the stub's own $1
-printf '#!/bin/sh\ncase $1 in list) exit 1 ;; esac\nexit 0\n' >"$w/stub/launchctl"
-printf '#!/bin/sh\necho HOSTBUILD\n' >"$w/stub/sw_vers"
-chmod 755 "$w/stub/launchctl" "$w/stub/sw_vers"
-# simboot.sh writes the bootstrap, loads the device job (stubbed) and stops at its lookup, which the stub's list
-# fails; the golden needs only the bootstrap
+# shellcheck source=stubs.sh
+. "$here/stubs.sh"
+make_stubs "$w"
+# simboot.sh writes the bootstrap, loads its jobs (stubbed) and gives up on a boot that doesn't come
 (
 	umask 022
 	PATH="$w/stub:$PATH" SIM_RUNTIME_ROOT="$w/rt" SIM_DEVICE_DATA="$w/data" SIM_BOOT_TIMEOUT=0 \

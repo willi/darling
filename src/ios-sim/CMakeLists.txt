@@ -42,6 +42,7 @@ add_custom_command(
 		${CMAKE_SOURCE_DIR}/tools/ios-sim/simboot.sh
 		${CMAKE_SOURCE_DIR}/tools/ios-sim/simdevice.sh
 		${ios_sim_test}/bootstrap-golden.sh
+		${ios_sim_test}/stubs.sh
 		${ios_sim_test}/bootstrap.golden
 		${ios_sim_test}/bootstrap.allow
 		${ios_sim_test}/plist2lines.awk
@@ -50,9 +51,9 @@ add_custom_command(
 )
 add_custom_target(ios_sim_bootstrap_golden ALL DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/bootstrap-golden.stamp)
 
-# simboot.sh stops at once, saying why, when a job file came out with an empty value or launchd refused a job
+# simboot.sh starts no program in its job files' values, and stops at once, saying why, when launchd refused a job
 # (tools/ios-sim/test/simboot-fail-fast.sh): such a boot otherwise waits out its whole timeout. A few seconds, with
-# launchctl and sed stubbed, again only when the scripts change.
+# launchctl stubbed, again only when the scripts change.
 add_custom_command(
 	OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/simboot-fail-fast.stamp
 	COMMAND sh ${ios_sim_test}/simboot-fail-fast.sh
@@ -61,7 +62,8 @@ add_custom_command(
 		${CMAKE_SOURCE_DIR}/tools/ios-sim/simboot.sh
 		${CMAKE_SOURCE_DIR}/tools/ios-sim/simdevice.sh
 		${ios_sim_test}/simboot-fail-fast.sh
-	COMMENT "simboot.sh stops at a failed job write and at a refused job"
+		${ios_sim_test}/stubs.sh
+	COMMENT "simboot.sh writes its jobs without starting a program and stops at a refused job"
 	VERBATIM
 )
 add_custom_target(ios_sim_simboot_fail_fast ALL DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/simboot-fail-fast.stamp)
