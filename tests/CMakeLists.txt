@@ -58,7 +58,6 @@ darling_test(workq_create_fails)
 darling_test(host_thread_signal)
 darling_test(fsgetpath)
 darling_test(dserver_bad_push)
-darling_test(shellspawn_exit)
 darling_test(peruser_bootstrap)
 # it speaks darlingserver's protocol
 target_include_directories(dserver_bad_push PRIVATE ${CMAKE_BINARY_DIR}/src/external/darlingserver/include)
@@ -70,5 +69,6 @@ target_include_directories(kprintf_cost PRIVATE ${CMAKE_BINARY_DIR}/src/external
 add_dependencies(kprintf_cost generate_dserver_rpc_wrappers)
 darling_test(fork_uniqueid)
 darling_test(audit_session)
+darling_test(shellspawn_exit)
 
 install(PROGRAMS run-all.sh DESTINATION libexec/darling/usr/libexec/darling-tests)

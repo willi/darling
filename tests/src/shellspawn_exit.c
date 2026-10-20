@@ -1,8 +1,11 @@
 // `darling shell` and `darling PROGRAM` exit with what shellspawn reports for the program it ran. A program a signal
 // killed has to come back as a shell reports it, 128 + the signal: shellspawn sent WEXITSTATUS alone, so a crash read as
 // exit 0, and a harness that took `darling shell`'s exit status as the verdict passed it. Talks to the prefix's
-// shellspawn as the darling client does, both ways it runs something: a login shell's `-c`, and an executable
-// (SHELLSPAWN_SETEXEC).
+// shellspawn as the darling client does, both ways it runs something: a login shell's `-c` (`darling shell`), and an
+// executable (SHELLSPAWN_SETEXEC, `darling PROGRAM`).
+//
+// A white-box test: push(), go() and run() mirror src/startup/darling.c's pushShellspawnCommandData,
+// pushShellspawnCommandFDs, spawnShell and spawnBinary, and must change with them.
 //
 // Prints one "ok"/"not ok" line per check; the exit status is the number of failed checks.
 
@@ -70,7 +73,12 @@ static int run(const char* exec, const char* const args[])
 	int fd = socket(AF_UNIX, SOCK_STREAM, 0);
 	int io = open("/dev/null", O_RDWR);
 	int status = -1;
-	if (fd < 0 || io < 0 || connect(fd, (struct sockaddr*) &addr, sizeof(addr)) != 0)
+	if (io < 0)
+	{
+		printf("# /dev/null: %s\n", strerror(errno));
+		goto out;
+	}
+	if (fd < 0 || connect(fd, (struct sockaddr*) &addr, sizeof(addr)) != 0)
 	{
 		printf("# shellspawn at %s: %s\n", SHELLSPAWN_SOCKPATH, strerror(errno));
 		goto out;
@@ -95,19 +103,22 @@ int main(void)
 	char what[128];
 	int s;
 
-	// a login shell's -c: the shell itself is the program
+	// a backstop: shellspawn answers when Darling's EVFILT_PROC reports the exit, and nothing below may hang the suite
+	alarm(60);
+	// a shellspawn that drops the connection makes a check fail with -1, not kill the test
+	signal(SIGPIPE, SIG_IGN);
+
+	// the exit branch, through a login shell's -c
 	s = run(NULL, (const char* const[]) { "-c", "exit 3", NULL });
 	snprintf(what, sizeof(what), "a shell's exit 3 comes back as 3 (%d)", s);
 	check(s == 3, what);
 
-	s = run(NULL, (const char* const[]) { "-c", "kill -SEGV $$", NULL });
-	snprintf(what, sizeof(what), "a shell SIGSEGV killed comes back as 128 + SIGSEGV (%d)", s);
-	check(s == 128 + SIGSEGV, what);
-
-	// an executable (`darling PROGRAM`)
-	s = run("/bin/sh", (const char* const[]) { "sh", "-c", "kill -ILL $$", NULL });
-	snprintf(what, sizeof(what), "an executable SIGILL killed comes back as 128 + SIGILL (%d)", s);
-	check(s == 128 + SIGILL, what);
+	// the signal branch, through an executable. SIGBUS, not a signal both numberings share (SEGV, ILL): Darwin's is
+	// 10, Linux's 7, so this pins the status to 128 + the Darwin number, as the prefix's shell reports it
+	s = run("/bin/sh", (const char* const[]) { "sh", "-c", "kill -BUS $$", NULL });
+	snprintf(what, sizeof(what), "an executable SIGBUS killed comes back as 128 + Darwin's SIGBUS, %d (%d)",
+		128 + SIGBUS, s);
+	check(s == 128 + SIGBUS, what);
 
 	return failures;
 }

@@ -403,9 +403,17 @@ void spawnShell(int fd)
 	// Reap the child
 	int wstatus;
 	if (waitpid(shell_pid, &wstatus, 0) != shell_pid)
+	{
 		perror("waitpid");
-	// as a shell reports a command a signal killed: 128 + the signal (WEXITSTATUS alone made a crash exit 0)
-	wstatus = WIFSIGNALED(wstatus) ? 128 + WTERMSIG(wstatus) : WEXITSTATUS(wstatus);
+		wstatus = 255; // no status to report: never one that reads as success
+	}
+	else
+	{
+		// as the prefix's shell reports a command a signal killed: 128 + the Darwin signal number (wait4 gives it in
+		// Darwin's numbering; it's left so, so that `darling shell PROG` and `darling shell 'PROG; exit $?'` agree).
+		// WEXITSTATUS alone made a crash exit 0.
+		wstatus = WIFSIGNALED(wstatus) ? 128 + WTERMSIG(wstatus) : WEXITSTATUS(wstatus);
+	}
 	
 	// Report exit code back to the client
 	write(fd, &wstatus, sizeof(int));
