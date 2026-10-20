@@ -58,6 +58,7 @@ darling_test(workq_create_fails)
 darling_test(host_thread_signal)
 darling_test(fsgetpath)
 darling_test(dserver_bad_push)
+darling_test(peruser_lookup)
 # it speaks darlingserver's protocol
 target_include_directories(dserver_bad_push PRIVATE ${CMAKE_BINARY_DIR}/src/external/darlingserver/include)
 add_dependencies(dserver_bad_push generate_dserver_rpc_wrappers)

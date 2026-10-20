@@ -9003,7 +9003,12 @@ job_mig_register2(job_t j, name_t servicename, mach_port_t serviceport, uint64_t
 	 */
 	if (unlikely(j->anonymous && j->mgr->parentmgr == NULL && ldc->uid != 0 && ldc->uid != getuid() && ldc->uid != 92)) {
 		if (pid1_magic) {
+#ifndef DARLING
 			return VPROC_ERR_TRY_PER_USER;
+#endif
+			// Darling runs no per-user launchd: a client sent to one would wait on a bootstrap port nothing serves.
+			// It registers in the system domain instead, as a modern launchd keeps a user's domains (user/<uid>,
+			// gui/<uid>) in the one launchd. darlingserver gives the audit token a real ruid since B33.
 		} else {
 			return BOOTSTRAP_NOT_PRIVILEGED;
 		}
@@ -9059,9 +9064,13 @@ job_mig_look_up2(job_t j, mach_port_t srp, name_t servicename, mach_port_t *serv
 
 	// 5641783 for the embedded hack
 #if !TARGET_OS_EMBEDDED
+	// Darling runs no per-user launchd: as in job_mig_register2(), a non-root client's lookup is served from the
+	// system domain, as a modern launchd does for a system service
+#ifndef DARLING
 	if (unlikely(pid1_magic && j->anonymous && j->mgr->parentmgr == NULL && ldc->uid != 0 && ldc->euid != 0)) {
 		return VPROC_ERR_TRY_PER_USER;
 	}
+#endif
 #endif
 
 #if HAVE_SANDBOX
@@ -11495,10 +11504,14 @@ job_mig_spawn_internal(job_t j, vm_offset_t indata, mach_msg_type_number_t indat
 	}
 #endif
 
+	// Darling runs no per-user launchd (job_mig_register2()): a non-root client's spawn stays in the system domain,
+	// and the job runs as the client (mach_uid below)
+#ifndef DARLING
 	if (unlikely(pid1_magic && ldc->euid && ldc->uid)) {
 		job_log(j, LOG_DEBUG, "Punting spawn to per-user-context");
 		return VPROC_ERR_TRY_PER_USER;
 	}
+#endif
 
 	if (!job_assumes(j, indataCnt != 0)) {
 		return 1;
