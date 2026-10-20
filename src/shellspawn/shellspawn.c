@@ -404,7 +404,8 @@ void spawnShell(int fd)
 	int wstatus;
 	if (waitpid(shell_pid, &wstatus, 0) != shell_pid)
 		perror("waitpid");
-	wstatus = WEXITSTATUS(wstatus);
+	// as a shell reports a command a signal killed: 128 + the signal (WEXITSTATUS alone made a crash exit 0)
+	wstatus = WIFSIGNALED(wstatus) ? 128 + WTERMSIG(wstatus) : WEXITSTATUS(wstatus);
 	
 	// Report exit code back to the client
 	write(fd, &wstatus, sizeof(int));
