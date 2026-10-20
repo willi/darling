@@ -426,17 +426,16 @@ int __darling_thread_terminate(void* stackaddr,
 				unsigned long freesize, unsigned long pthobj_size)
 {
 	int checkout_result = 0;
-	sigset_t all, app;
+	sigset_t all;
 
-	// Once it has checked out and closed its RPC socket, the thread can't run Darling's signal handlers (they talk to
-	// darlingserver first), so it takes no more signals: Linux hands a signal sent to the process to another thread.
-	// Until it has checked out, darlingserver may still send it its own two (to suspend it, or to make it run a call),
-	// and waits for an answer. Signals stay blocked when it longjmps out below: setjmp doesn't save the mask.
+	// From its checkout on, the thread can't run Darling's signal handlers (they talk to darlingserver first), so it
+	// takes no more signals: Linux hands a signal sent to the process to another thread. darlingserver's own two (to
+	// suspend it, or to make it run a call) are blocked too. One taken during the checkout ran sigrt_handler, whose
+	// interrupt_enter could get the checkout's reply, and push it back to a darlingserver that had let the thread go:
+	// both waited for ever (so did a thread_suspend() of it). darlingserver's suspend of a thread ends when it dies.
+	// Signals stay blocked when it longjmps out below: setjmp doesn't save the mask.
 	sigfillset(&all);
-	app = all;
-	sigdelset(&app, SIGRTMIN); // Darling's LINUX_SIGRTMIN is glibc's
-	sigdelset(&app, SIGRTMIN + 1);
-	pthread_sigmask(SIG_BLOCK, &app, NULL);
+	pthread_sigmask(SIG_BLOCK, &all, NULL);
 
 	if (t_server_socket != -1) {
 		checkout_result = dserver_rpc_explicit_checkout(t_server_socket, -1, false);
@@ -445,14 +444,15 @@ int __darling_thread_terminate(void* stackaddr,
 	}
 
 	if (checkout_result < 0) {
-		// failing to check-out is not fatal.
-		// it's not ideal, but it's not fatal.
-		#define CHECKOUT_FAILURE_MESSAGE "Failed to checkout"
-		if (t_server_socket != -1) {
-			dserver_rpc_explicit_kprintf(t_server_socket, CHECKOUT_FAILURE_MESSAGE, sizeof(CHECKOUT_FAILURE_MESSAGE) - 1);
-		} else {
-			dserver_rpc_kprintf(CHECKOUT_FAILURE_MESSAGE, sizeof(CHECKOUT_FAILURE_MESSAGE) - 1);
-		}
+		// Not fatal: the thread ends anyway, and darlingserver drops it with its process. But it's an error, so it goes
+		// to stderr, where it is seen: a kprintf is logged at Info, which darlingserver's default level (Error) drops,
+		// and it would take the same socket that just failed.
+		char msg[160];
+		int len = snprintf(msg, sizeof(msg), "mldr: thread %ld couldn't check out of darlingserver: %d\n",
+			(long) syscall(SYS_gettid), checkout_result);
+
+		if (len > 0)
+			write(STDERR_FILENO, msg, (len < (int) sizeof(msg)) ? len : (int) sizeof(msg) - 1);
 	}
 
 	// close the RPC FD (if necessary)
@@ -460,8 +460,6 @@ int __darling_thread_terminate(void* stackaddr,
 	if (t_server_socket != -1) {
 		__mldr_close_rpc_socket(t_server_socket);
 	}
-
-	pthread_sigmask(SIG_BLOCK, &all, NULL);
 
 	if (getpid() == syscall(SYS_gettid))
 	{
