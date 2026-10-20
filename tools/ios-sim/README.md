@@ -70,6 +70,9 @@ more than environment: launchd_sim puts `IPHONE_SHARED_RESOURCES_DIRECTORY` (the
 Without it the front is `(null)`: a job whose working directory is under `/var/mobile` (nanoregistryd's) fails to start
 with EX_CONFIG, and the path conditions never hold. simboot.sh says which of the runtime's libraries read the others.
 `VM_KERNEL_PAGE_SIZE_4K` is in `Child` alone, as on a Mac, and nothing in the runtime reads it.
+`test/bootstrap-golden.sh` checks the bootstrap against a Mac's, pinned as a golden master (`test/bootstrap.golden`),
+with the differences this device keeps listed and explained in `test/bootstrap.allow`. It runs on the host, without
+Darling: `sh tools/ios-sim/test/bootstrap-golden.sh`.
 `simboot.sh` needs umask 022 (or one that also keeps group and others from writing): `launchctl` skips job plists that
 group or others can write. A `darling shell` has `launchd`'s umask, which `darling` starts with at least 022.
 `launchd_sim` logs to `/private/var/tmp/com.apple.CoreSimulator.SimDevice.<udid>/launchd.log`.
