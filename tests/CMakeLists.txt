@@ -71,5 +71,6 @@ darling_test(fork_uniqueid)
 darling_test(audit_session)
 darling_test(spawn_errno)
 darling_test(shellspawn_exit)
+darling_test(priority)
 
 install(PROGRAMS run-all.sh DESTINATION libexec/darling/usr/libexec/darling-tests)
