@@ -4,8 +4,10 @@
 // waited forever on a per-user bootstrap port: since darlingserver gives the token a real ruid (B33), `id` and
 // `defaults` run as 501 (simasuid 501 20 ...) hung at their first lookup, com.apple.system.notification_center.
 //
-// Run as root. The child becomes uid 501 gid 20 and looks up notifyd's service and registers a name, each under a
-// 20 s alarm. Prints one "ok"/"not ok" line per check; the exit status is the number of failed checks.
+// Run as root. The parent registers a name as root; the child becomes uid 501 gid 20, looks that name up, then registers
+// and looks up a name of its own, each under a 20 s alarm. (A name of the test's own rather than notifyd's: a bare
+// prefix may run no notifyd, and launchd sent the client away before it looked at the name at all.) Prints one
+// "ok"/"not ok" line per check; the exit status is the number of failed checks.
 
 #include <bootstrap.h>
 #include <mach/mach.h>
@@ -35,7 +37,7 @@ static void timed_out(int sig)
 	_exit(100);
 }
 
-static int as_501(void)
+static int as_501(const char* root_name)
 {
 	mach_port_t port = MACH_PORT_NULL;
 	char name[64];
@@ -47,9 +49,9 @@ static int as_501(void)
 	signal(SIGALRM, timed_out);
 
 	alarm(20);
-	kern_return_t kr = bootstrap_look_up(bootstrap_port, "com.apple.system.notification_center", &port);
+	kern_return_t kr = bootstrap_look_up(bootstrap_port, root_name, &port);
 	alarm(0);
-	check(kr == KERN_SUCCESS && MACH_PORT_VALID(port), "as uid 501: look up com.apple.system.notification_center");
+	check(kr == KERN_SUCCESS && MACH_PORT_VALID(port), "as uid 501: look up a name root registered");
 
 	mach_port_t recv = MACH_PORT_NULL;
 	mach_port_allocate(mach_task_self(), MACH_PORT_RIGHT_RECEIVE, &recv);
@@ -77,9 +79,23 @@ int main(void)
 		printf("not ok - run as root\n");
 		return 1;
 	}
+	// registered before the fork, so the name is in the bootstrap the child looks in
+	char root_name[64];
+	mach_port_t root_port = MACH_PORT_NULL;
+	snprintf(root_name, sizeof(root_name), "org.darlinghq.tests.peruser_lookup.root.%d", getpid());
+	mach_port_allocate(mach_task_self(), MACH_PORT_RIGHT_RECEIVE, &root_port);
+	mach_port_insert_right(mach_task_self(), root_port, root_port, MACH_MSG_TYPE_MAKE_SEND);
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+	kern_return_t kr = bootstrap_register(bootstrap_port, root_name, root_port);
+#pragma clang diagnostic pop
+	check(kr == KERN_SUCCESS, "as root: register a name");
+	if (kr != KERN_SUCCESS)
+		return failures;
+
 	pid_t pid = fork();
 	if (pid == 0)
-		_exit(as_501());
+		_exit(as_501(root_name));
 	int status = 0;
 	if (pid < 0 || waitpid(pid, &status, 0) != pid || !WIFEXITED(status)) {
 		check(0, "the uid 501 child exited");
