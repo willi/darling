@@ -75,6 +75,10 @@ with EX_CONFIG, and the path conditions never hold. simboot.sh says which of the
 with the differences this device keeps listed in `test/bootstrap.allow`, each with its own value and why. A build
 with the `ios_sim` component runs it and stops if it fails. By hand it runs on a Linux host, without Darling:
 `sh tools/ios-sim/test/bootstrap-golden.sh`.
+`test/simboot-fail-fast.sh` checks that `simboot.sh` writes its job files without starting a program in their
+`$(...)` values (one that fails there leaves its value empty unseen), and stops at once when `launchd` refused a job,
+rather than waiting out the boot's timeout; the build runs it too. Both tests take their `launchctl` stub from
+`test/stubs.sh`.
 `simboot.sh` needs umask 022 (or one that also keeps group and others from writing): `launchctl` skips job plists that
 group or others can write. A `darling shell` has `launchd`'s umask, which `darling` starts with at least 022.
 `launchd_sim` logs to `/private/var/tmp/com.apple.CoreSimulator.SimDevice.<udid>/launchd.log`.
