@@ -73,6 +73,7 @@ static void load_fat(int fd, cpu_type_t cpu, bool expect_dylinker, char** argv, 
 static void load(const char* path, cpu_type_t cpu, bool expect_dylinker, char** argv, struct load_results* lr);
 static int native_prot(int prot);
 static void setup_space(struct load_results* lr, bool is_64_bit);
+static void redraw_layout(char** argv, const char* what);
 static void process_special_env(struct load_results* lr);
 static void start_thread(struct load_results* lr);
 static bool is_kernel_at_least(int major, int minor);
@@ -270,7 +271,8 @@ int main(int argc, char** argv, char** envp)
 		if (
 			ENV_VAR_MATCHES("__mldr_bprefs=")   ||
 			ENV_VAR_MATCHES("__mldr_sockpath=") ||
-			ENV_VAR_MATCHES("__mldr_spawn_pipe=")
+			ENV_VAR_MATCHES("__mldr_spawn_pipe=") ||
+			ENV_VAR_MATCHES("__mldr_layout_draws=")
 		) {
 			size_t len_after = 0;
 			const char* orig_envp_i_plus_one = mldr_load_results.envp[i + 1];
@@ -340,7 +342,8 @@ void load(const char* path, cpu_type_t forced_arch, bool expect_dylinker, char**
 	int fd;
 	uint32_t magic;
 
-	fd = open(path, O_RDONLY);
+	// close-on-exec: mldr can exec itself again before it closes it (reexec32(), redraw_layout())
+	fd = open(path, O_RDONLY | O_CLOEXEC);
 	if (fd == -1)
 	{
 		spawn_error_from_errno(errno);
@@ -647,6 +650,7 @@ static void unset_special_env() {
 	unsetenv("__mldr_sockpath");
 	unsetenv("__mldr_lifetime_pipe");
 	unsetenv("__mldr_spawn_pipe");
+	unsetenv("__mldr_layout_draws");
 };
 
 typedef struct socket_bitmap {
@@ -929,8 +933,62 @@ void __mldr_close_process_lifetime_pipe(int fd) {
 	}
 }
 
+// How many address space layouts mldr tries before it gives up (redraw_layout()). Each is taken with a chance of about
+// 1 in 40,000, so a second is already rare.
+#define LAYOUT_DRAWS 8
+
+// At each exec the kernel puts the Linux stack, and the vDSO just above it, at a random place in the 16 GiB under the
+// top of the address space. Now and then they take the commpage's address, or the stack's range just under it (on
+// Linux 6.6, x86_64: 23 execs in 10^6). mldr then execs itself again for a new layout, with the same arguments and
+// environment: the image isn't loaded yet, and nothing has been told to darlingserver or to a parent waiting in
+// posix_spawn(). It returns only when it can't (the caller fails as before).
+static void redraw_layout(char** argv, const char* what)
+{
+	char selfpath[1024];
+	char draws[16];
+	const char* str = getenv("__mldr_layout_draws");
+	int done = str ? atoi(str) : 0;
+	ssize_t len;
+
+	if (done + 1 >= LAYOUT_DRAWS)
+	{
+		fprintf(stderr, "mldr: %s's range was taken in %d address space layouts in a row\n", what, LAYOUT_DRAWS);
+		return;
+	}
+
+	len = readlink("/proc/self/exe", selfpath, sizeof(selfpath) - 1);
+	if (len == -1)
+	{
+		perror("Cannot readlink /proc/self/exe");
+		return;
+	}
+	selfpath[len] = '\0';
+
+	snprintf(draws, sizeof(draws), "%d", done + 1);
+	setenv("__mldr_layout_draws", draws, 1);
+
+	// the next mldr takes posix_spawn()'s pipe on, where it is now (as reexec32() does)
+	if (spawn_pipe >= 0)
+	{
+		char fd[16];
+		snprintf(fd, sizeof(fd), "%d", spawn_pipe);
+		setenv("__mldr_spawn_pipe", fd, 1);
+		fcntl(spawn_pipe, F_SETFD, 0);
+	}
+	execv(selfpath, argv);
+
+	int err = errno;
+	if (spawn_pipe >= 0)
+		fcntl(spawn_pipe, F_SETFD, FD_CLOEXEC);
+	fprintf(stderr, "Cannot re-execute mldr for a new address space layout: %s\n", strerror(err));
+}
+
 static void setup_space(struct load_results* lr, bool is_64_bit) {
-	commpage_setup(is_64_bit);
+	if (!commpage_setup(is_64_bit)) {
+		redraw_layout(lr->argv, "the commpage");
+		fprintf(stderr, "Cannot map the commpage at %#lx: something else is there\n", commpage_address(is_64_bit));
+		exit(1);
+	}
 
 	// Using the default stack top would cause the stack to be placed just above the commpage
 	// and would collide with it eventually.
@@ -952,7 +1010,12 @@ static void setup_space(struct load_results* lr, bool is_64_bit) {
 	}
 
 	if (compatible_mmap((void*)(lr->stack_top - size), size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED_NOREPLACE | MAP_GROWSDOWN, -1, 0) == MAP_FAILED) {
-		fprintf(stderr, "Failed to allocate stack of %lu bytes: %d (%s)\n", size, errno, strerror(errno));
+		int err = errno;
+		// EEXIST: something is in the range; ESRCH: the same, from compatible_mmap() on a kernel without
+		// MAP_FIXED_NOREPLACE
+		if (err == EEXIST || err == ESRCH)
+			redraw_layout(lr->argv, "the stack");
+		fprintf(stderr, "Failed to allocate stack of %lu bytes: %d (%s)\n", size, err, strerror(err));
 		exit(1);
 	}
 

@@ -7,7 +7,7 @@
 extern "C" {
 #endif
 
-void commpage_setup(bool _64bit);
+bool commpage_setup(bool _64bit);
 unsigned long commpage_address(bool _64bit);
 
 union cpu_flags1 {
