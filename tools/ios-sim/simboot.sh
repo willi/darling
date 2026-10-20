@@ -33,12 +33,6 @@ D="$SIM_DEVICE_DATA"
 NAME="$SIM_DEVICE_JOB_LABEL"
 JOB="$SIM_DEVICE_JOB"
 LOG="$SIM_DEVICE_LOG"
-# the device type's name, as SIMULATOR_VERSION_INFO gives it: its bundle's (iPhone 16.simdevicetype), else the default
-# model's
-TYPE_NAME=${SIM_DEVICE_TYPE%/}
-TYPE_NAME=${TYPE_NAME##*/}
-TYPE_NAME=${TYPE_NAME%.simdevicetype}
-: "${TYPE_NAME:=iPhone 16}"
 BOOT_TIME=$(date +%s)
 
 if [ $# -gt 0 ]; then
@@ -110,19 +104,21 @@ fi
 # EnvironmentVariables. launchd_sim's own environment, "Self", is Child and the defaults below together, as a Mac's
 # (whose Self lacks one key of its Child's, VM_KERNEL_PAGE_SIZE_4K, which is in Child alone here too). The keys are a
 # Mac's, with its values and paths (README.md):
-# - IPHONE_SHARED_RESOURCES_DIRECTORY, the data directory: launchd_sim reads it from Child and puts it in front of
-#   every /var/mobile/ path of a job (WorkingDirectory, KeepAlive PathState, WatchPaths, QueueDirectories). Without
-#   it the front is "(null)": a job whose working directory is under /var/mobile can't start, and path conditions
+# - IPHONE_SHARED_RESOURCES_DIRECTORY, the data directory: launchd_sim reads it from Child and replaces the /var/mobile
+#   a job's paths start with by it (WorkingDirectory, KeepAlive PathState, WatchPaths, QueueDirectories). Without it
+#   the replacement is "(null)": a job whose working directory is under /var/mobile can't start, and path conditions
 #   never hold. syslogd and libAccessibility read it too.
 # - SIMULATOR_EXTENDED_DISPLAY_PROPERTIES and IPHONE_TVOUT_EXTENDED_PROPERTIES, the extended display's plist:
 #   backboardd, BackBoardServices and UIKitCore read the first.
 # - SIMULATOR_AUDIO_SETTINGS_PATH (AudioToolbox, AudioSession) and SIMULATOR_AUDIO_DEVICES_PLIST_PATH, the audio
-#   settings and devices in the device's var/run. A Mac's CoreSimulator writes the devices plist before the boot;
-#   simboot writes none of these three files, whose contents the oracle doesn't show.
-# - SIMULATOR_MEMORY_WARNINGS (libdispatch), a file simboot makes empty, as a Mac's CoreSimulator does.
+#   settings and devices in the device's var/run. simboot writes neither: a Mac's CoreSimulator writes the devices
+#   plist before the boot, naming the Mac's own audio devices, which a Darling host doesn't have.
+# - SIMULATOR_MEMORY_WARNINGS (libdispatch), a file simboot makes empty, as a Mac's CoreSimulator does: a simulator's
+#   libdispatch opens it to watch for memory warnings: with no file the open fails, and with no key its
+#   memory-pressure sources watch nothing.
 # - SIMULATOR_VERSION_INFO (libsystem_sim_platform, libsystem_trace): CoreSimulator's version (the oracle's), the
-#   device, the runtime and the device type.
-# - LS_ENABLE_BUNDLE_LOCALIZATION_CACHING (LaunchServices).
+#   device, the runtime and the device type (simdevice.sh's SIM_CORESIMULATOR_VERSION and SIM_DEVICE_TYPE_NAME).
+# - LS_ENABLE_BUNDLE_LOCALIZATION_CACHING (CoreServices: LaunchServices).
 # - SIMULATOR_BOOT_TIME, when simboot writes the bootstrap (seconds since 1970). Nothing in the runtime reads it.
 # - VM_KERNEL_PAGE_SIZE_4K, in Child alone. Nothing in the runtime reads it: it's here to match a Mac's environment.
 env_child() {
@@ -153,7 +149,7 @@ env_child() {
 <key>SIMULATOR_AUDIO_SETTINGS_PATH</key><string>$(x "$D/var/run/simulatoraudio/audiosettings.plist")</string>
 <key>SIMULATOR_AUDIO_DEVICES_PLIST_PATH</key><string>$(x "$D/var/run/com.apple.coresimulator.audio.plist")</string>
 <key>SIMULATOR_MEMORY_WARNINGS</key><string>$(x "$D/var/run/memory_warning_simulation")</string>
-<key>SIMULATOR_VERSION_INFO</key><string>$(x "CoreSimulator 1051.55 - Device: $SIM_DEVICE_NAME ($SIM_UDID) - Runtime: iOS $SIM_RUNTIME_VERSION ($SIM_RUNTIME_BUILD_VERSION) - DeviceType: $TYPE_NAME")</string>
+<key>SIMULATOR_VERSION_INFO</key><string>$(x "CoreSimulator $SIM_CORESIMULATOR_VERSION - Device: $SIM_DEVICE_NAME ($SIM_UDID) - Runtime: iOS $SIM_RUNTIME_VERSION ($SIM_RUNTIME_BUILD_VERSION) - DeviceType: $SIM_DEVICE_TYPE_NAME")</string>
 <key>LS_ENABLE_BUNDLE_LOCALIZATION_CACHING</key><string>1</string>
 <key>SIMULATOR_BOOT_TIME</key><string>$BOOT_TIME</string>
 EOF

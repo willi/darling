@@ -56,6 +56,16 @@ if [ -n "$SIM_DEVICE_TYPE" ]; then
 fi
 : "${SIM_MODEL_IDENTIFIER:=iPhone17,3}"
 : "${SIM_PRODUCT_CLASS:=D47}"
+# the device type's name, as SIMULATOR_VERSION_INFO gives it: its bundle's ("iPhone 16" for iPhone
+# 16.simdevicetype); none: the default model's, an iPhone 16's (set it too when SIM_MODEL_IDENTIFIER is another)
+if [ -z "${SIM_DEVICE_TYPE_NAME:-}" ]; then
+	SIM_DEVICE_TYPE_NAME=${SIM_DEVICE_TYPE%/}
+	SIM_DEVICE_TYPE_NAME=${SIM_DEVICE_TYPE_NAME##*/}
+	SIM_DEVICE_TYPE_NAME=${SIM_DEVICE_TYPE_NAME%.simdevicetype}
+	: "${SIM_DEVICE_TYPE_NAME:=iPhone 16}"
+fi
+# the CoreSimulator version SIMULATOR_VERSION_INFO names: the Mac's whose bootstrap simboot.sh matches (README.md)
+: "${SIM_CORESIMULATOR_VERSION:=1051.55}"
 # the architectures the device runs apps for: without them, LaunchServices registers no app
 : "${SIM_ARCHS:=x86_64}"
 # the screen of an iPhone 16 (iPhone17,3), in pixels, its scale and its dot pitch (pixels per inch)
