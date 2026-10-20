@@ -47,6 +47,14 @@ export SIM_RUNTIME_ROOT=...
 `launchd_sim_trampoline`, which hands the device's bootstrap port to `launchd_sim`. The device loads the daemons in
 `SIM_DAEMONS` (`cfprefsd`, `logd` and `logd_helper` by default). `simspawn` passes `SIMCTL_CHILD_*` variables to the program, as
 `simctl spawn` does; `SIMCTL_CHILD_OS_ACTIVITY_DT_MODE=1` prints its `os_log` messages on stderr.
+The device's `launchd_bootstrap.plist` gives launchd_sim its own environment (`Self`) and two for its jobs: `Child`,
+which launchd_sim sets over a job's own `EnvironmentVariables`, and `ChildDefaults`, which a job's own variables
+override. As in CoreSimulator's, `HOME`, `CFFIXED_USER_HOME` and `TMPDIR` are in `ChildDefaults`, so an app keeps the
+data container's home and temporary directory that RunningBoard puts in its job. A job without its own, such as a
+daemon or a system app, gets the device's data directory, as on a Mac. A Mac's bootstrap and its jobs' environments
+show the two dicts and that a job's own variables override `ChildDefaults`. That `Child` overrides them comes from this
+device, while the three were in `Child`: an app got the data directory, though RunningBoard had given its job the
+container.
 `simboot.sh` needs umask 022 (or one that also keeps group and others from writing): `launchctl` skips job plists that
 group or others can write. A `darling shell` has `launchd`'s umask, which `darling` starts with at least 022.
 `launchd_sim` logs to `/private/var/tmp/com.apple.CoreSimulator.SimDevice.<udid>/launchd.log`.
@@ -86,7 +94,9 @@ LaunchServices registers the runtime's apps): `SIM_DAEMONS=all`, or at least `cf
 `/Library/Developer/CoreSimulator/Profiles/DeviceTypes`). As CoreSimulator does, the device takes its model, its
 screen and the profile's environment from it, and its capabilities tell MobileGestalt the screen's shape, without
 which UIKit can't lay an app's window out. `SIM_MODEL_IDENTIFIER`, `SIM_SCREEN_*` and the rest override what the
-device type says; `SIM_EXTRA_ENVIRONMENT` adds `NAME=VALUE` words to the environment of the device's processes.
+device type says; `SIM_EXTRA_ENVIRONMENT` adds `NAME=VALUE` words to the environment of the device's processes. They
+go into `Child`, so they override a job's own variables: an extra `HOME`, `CFFIXED_USER_HOME` or `TMPDIR` replaces an
+app's data container's too.
 
 `simboot.sh` also starts `simiokitd` beside the device: a Mac's simulator processes reach the host kernel's IOKit, and
 Darling has none, so `simiokitd` serves `com.apple.iokitsimd` in the device (the runtime's IOKit looks it up when
