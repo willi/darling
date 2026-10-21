@@ -172,22 +172,31 @@ int main(int argc, char ** argv)
 	// If prefix's init is not running, start it up
 	if (pidInit == 0)
 	{
-		char socketPath[4096];
-		
-		snprintf(socketPath, sizeof(socketPath), "%s"  SHELLSPAWN_SOCKPATH, prefix);
-		
-		unlink(socketPath);
-		
+		// shellspawn's socket as this side sees it. darlingserver mounts the overlay in a mount namespace of its
+		// own, so here the prefix is the overlay's upper layer alone, without the installed var -> private/var
+		// symlink, which is in the lower layer. In a prefix set up since /var stopped being a directory of its own
+		// (setupPrefix), the socket lands in the upper layer's private/var/run. In an older prefix, /var is a
+		// directory in the upper layer, and the socket is there.
+		char socketPaths[2][4096];
+
+		snprintf(socketPaths[0], sizeof(socketPaths[0]), "%s/private" SHELLSPAWN_SOCKPATH, prefix);
+		snprintf(socketPaths[1], sizeof(socketPaths[1]), "%s" SHELLSPAWN_SOCKPATH, prefix);
+
+		// a socket left from an earlier run would pass the wait below before shellspawn binds its new one
+		unlink(socketPaths[0]);
+		unlink(socketPaths[1]);
+
 		setupWorkdir();
 		pidInit = spawnInitProcess();
 		putInitPid(pidInit);
-		
-		// Wait until shellspawn starts
-		for (int i = 0; i < 15; i++)
+
+		// Wait until shellspawn starts: up to 15 s, checked every 50 ms (it binds well under a second after launchd
+		// starts)
+		for (int i = 0; i < 15 * 20; i++)
 		{
-			if (access(socketPath, F_OK) == 0)
+			if (access(socketPaths[0], F_OK) == 0 || access(socketPaths[1], F_OK) == 0)
 				break;
-			sleep(1);
+			usleep(50 * 1000);
 		}
 	}
 
