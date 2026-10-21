@@ -82,6 +82,7 @@ along with Darling.  If not, see <http://www.gnu.org/licenses/>.
 #define MAX_MAPPINGS  8
 #define MAX_SUBCACHES 128
 #define MAX_RANGES    (MAX_SUBCACHES * MAX_MAPPINGS + 1)
+_Static_assert(MAX_RANGES == SHARED_REGION_MAX_RANGES, "shared_region.h's SHARED_REGION_MAX_RANGES");
 
 // where dyld_sim maps a cache's first mapping (SHARED_REGION_BASE_X86_64); the others keep their offsets from it
 #define SHARED_REGION_BASE 0x7ff800000000UL
@@ -270,11 +271,26 @@ static int taken(const struct range* r, int n)
 	return 0;
 }
 
+// what shared_region_reserve() reserved, for shared_region_reserved()
+static struct range r[MAX_RANGES];
+static int reserved_count;
+
+int shared_region_reserved(unsigned long (*ranges)[2], int max)
+{
+	int n = reserved_count < max ? reserved_count : max;
+	for (int i = 0; i < n; ++i) {
+		ranges[i][0] = r[i].lo;
+		ranges[i][1] = r[i].hi;
+	}
+	return reserved_count;
+}
+
 enum shared_region_result shared_region_reserve(unsigned long limit)
 {
 	char path[4096];
-	static struct range r[MAX_RANGES];
 	int n;
+
+	reserved_count = 0;
 
 	if (!cache_path(path, sizeof(path)) || (n = cache_ranges(path, r)) == 0)
 		return SHARED_REGION_OK;
@@ -310,6 +326,7 @@ enum shared_region_result shared_region_reserve(unsigned long limit)
 			path, strerror(err));
 		return SHARED_REGION_OK;
 	}
+	reserved_count = n;
 	return SHARED_REGION_OK;
 }
 

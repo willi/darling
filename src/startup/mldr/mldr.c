@@ -36,6 +36,7 @@ along with Darling.  If not, see <http://www.gnu.org/licenses/>.
 #include "shared_region.h"
 #include "loader.h"
 #include "taffy_launch.h"
+#include <darling-config.h>
 #include <sys/resource.h>
 #include <sys/prctl.h>
 #include <sys/socket.h>
@@ -86,9 +87,14 @@ static void setup_stack64(const char* filepath, struct load_results* lr);
 #endif
 static void setup_stack32(const char* filepath, struct load_results* lr);
 
+// tells darlingserver about the loaded image and lets posix_spawn() return in the parent: 0, or -1 with a message
+static int activate_image(const char* filename, struct load_results* lr);
+// the program's own (Darwin) path for the Linux path it was started from, in buf; NULL if it doesn't fit
+static const char* darwin_executable_path(const char* filepath, const struct load_results* lr, char* buf, size_t size);
+
 #ifndef __i386__
 // TAFFY_LAUNCH: an outside launcher maps the image (taffy_launch.h)
-static const char* taffy_launch = NULL;
+static bool taffy_launch_on = false;
 static void taffy_launch_prepare(const char* library, struct load_results* lr);
 static void taffy_launch_run(const char* filepath, struct load_results* lr);
 #endif
@@ -105,6 +111,8 @@ __attribute__((used))
 struct load_results mldr_load_results = {0};
 
 static uint32_t stack_size = 0;
+// the size setup_space() mapped for mldr's own stack, below lr->stack_top
+static unsigned long mldr_stack_size = 0;
 
 // posix_spawn()'s pipe, __mldr_spawn_pipe (the contract is sys_execve_spawn()'s, in darling-xnu's
 // xnu_syscall/bsd/impl/process/execve.h): the parent waits for it to close, once the image is activated, or for the
@@ -220,14 +228,15 @@ int main(int argc, char** argv, char** envp)
 #ifdef __i386__
 	load(filename, CPU_TYPE_X86, false, argv, &mldr_load_results); // accept i386 only
 #else
-	taffy_launch = getenv(TAFFY_LAUNCH_ENV);
-	if (taffy_launch != NULL && taffy_launch[0] == '\0')
-		taffy_launch = NULL;
-
-	if (taffy_launch != NULL)
-		taffy_launch_prepare(taffy_launch, &mldr_load_results);
-	else
-		load(filename, 0, false, argv, &mldr_load_results);
+	{
+		// used here only: the environment strings move when mldr strips its own variables below
+		const char* library = getenv(TAFFY_LAUNCH_ENV);
+		taffy_launch_on = library != NULL && library[0] != '\0';
+		if (taffy_launch_on)
+			taffy_launch_prepare(library, &mldr_load_results);
+		else
+			load(filename, 0, false, argv, &mldr_load_results);
+	}
 #endif
 
 	// this was previously necessary when we were loading the binary from the LKM
@@ -320,7 +329,7 @@ int main(int argc, char** argv, char** envp)
 	}
 
 #ifndef __i386__
-	if (taffy_launch != NULL)
+	if (taffy_launch_on)
 		taffy_launch_run(filename, &mldr_load_results);
 #endif
 
@@ -335,24 +344,8 @@ int main(int argc, char** argv, char** envp)
 		abort();
 #endif
 
-	int status = dserver_rpc_set_dyld_info(mldr_load_results.dyld_all_image_location, mldr_load_results.dyld_all_image_size);
-	if (status < 0) {
-		fprintf(stderr, "Failed to tell darlingserver about our dyld info\n");
+	if (activate_image(filename, &mldr_load_results) < 0)
 		exit(1);
-	}
-
-	uint64_t uuid[2];
-	memcpy(uuid, mldr_load_results.uuid, sizeof(uuid));
-	if (dserver_rpc_set_executable_path(filename, strlen(filename), uuid[0], uuid[1]) < 0) {
-		fprintf(stderr, "Failed to tell darlingserver about our executable path\n");
-		exit(1);
-	}
-
-	// the image is activated: posix_spawn() returns in the parent. Before any of the image's code runs, so it never sees
-	// the descriptor.
-	spawn_pipe_close();
-
-	__mldr_main_stack_top = (void*)mldr_load_results.stack_top;
 
 	start_thread(&mldr_load_results);
 
@@ -546,6 +539,57 @@ static void load_fat(int fd, cpu_type_t forced_arch, bool expect_dylinker, char*
 #endif
 	}
 };
+
+static const char* darwin_executable_path(const char* filepath, const struct load_results* lr, char* buf, size_t size)
+{
+	size_t len = strlen(filepath);
+
+	if (lr->root_path == NULL)
+	{
+		if (len >= size)
+			return NULL;
+		memcpy(buf, filepath, len + 1);
+	}
+	// inside the vchroot: the path below it
+	else if (strncmp(filepath, lr->root_path, lr->root_path_length) == 0)
+	{
+		if (len - lr->root_path_length >= size)
+			return NULL;
+		memmove(buf, filepath + lr->root_path_length, len - lr->root_path_length + 1);
+	}
+	// outside it: the Linux root as the program sees it, ahead of the path
+	else
+	{
+		const size_t k = sizeof(SYSTEM_ROOT) - 1;
+		if (k + len >= size)
+			return NULL;
+		memcpy(buf, SYSTEM_ROOT, k);
+		memcpy(buf + k, filepath, len + 1);
+	}
+	return buf;
+}
+
+static int activate_image(const char* filename, struct load_results* lr)
+{
+	if (dserver_rpc_set_dyld_info(lr->dyld_all_image_location, lr->dyld_all_image_size) < 0) {
+		fprintf(stderr, "Failed to tell darlingserver about our dyld info\n");
+		return -1;
+	}
+
+	uint64_t uuid[2];
+	memcpy(uuid, lr->uuid, sizeof(uuid));
+	if (dserver_rpc_set_executable_path(filename, strlen(filename), uuid[0], uuid[1]) < 0) {
+		fprintf(stderr, "Failed to tell darlingserver about our executable path\n");
+		return -1;
+	}
+
+	// the image is activated: posix_spawn() returns in the parent. Before any of the image's code runs, so it never sees
+	// the descriptor.
+	spawn_pipe_close();
+
+	__mldr_main_stack_top = (void*)lr->stack_top;
+	return 0;
+}
 
 #ifdef __x86_64__
 #define GEN_64BIT
@@ -1033,6 +1077,7 @@ static void setup_space(struct load_results* lr, bool is_64_bit) {
 		size = limit.rlim_cur;
 	}
 
+	mldr_stack_size = size;
 	if (compatible_mmap((void*)(lr->stack_top - size), size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED_NOREPLACE | MAP_GROWSDOWN, -1, 0) == MAP_FAILED) {
 		int err = errno;
 		// EEXIST: something is in the range
@@ -1229,7 +1274,9 @@ static void vchroot_unexpand_interpreter(struct load_results* lr) {
 
 #ifndef __i386__
 static taffy_launch_darling_fn taffy_launch_entry = NULL;
-static const char* taffy_launch_filename = NULL;
+// the Linux path the launcher was asked to start, kept for activate(): main()'s copy lives on the abandoned stack
+static char taffy_launch_filename[4096];
+static bool taffy_launch_activated = false;
 
 // TAFFY_LAUNCH: load64()'s set-up without the image (the address space, the check-in, the vchroot), then the
 // launcher library. Any failure here is fatal: mldr never falls back to loading the image itself.
@@ -1259,10 +1306,16 @@ static void taffy_launch_prepare(const char* library, struct load_results* lr)
 // what main() does after the stack is set up, with the launcher's values
 static int taffy_launch_activate(const struct taffy_launch_activation* a)
 {
-	if (a == NULL || a->version != TAFFY_LAUNCH_ACTIVATION_VERSION || a->size < sizeof(*a))
+	// lockstep (taffy_launch.h): exactly the version and size mldr was built with
+	if (a == NULL || a->version != TAFFY_LAUNCH_ACTIVATION_VERSION || a->size != sizeof(*a))
 	{
 		fprintf(stderr, "mldr: " TAFFY_LAUNCH_ENV ": activation version %u, size %u; mldr knows version %u, size %zu\n",
 			a ? a->version : 0, a ? a->size : 0, TAFFY_LAUNCH_ACTIVATION_VERSION, sizeof(*a));
+		return -1;
+	}
+	if (taffy_launch_activated)
+	{
+		fprintf(stderr, "mldr: " TAFFY_LAUNCH_ENV ": activate() called twice\n");
 		return -1;
 	}
 
@@ -1272,66 +1325,112 @@ static int taffy_launch_activate(const struct taffy_launch_activation* a)
 	mldr_load_results.dyld_all_image_size = a->dyld_all_image_infos_size;
 	memcpy(mldr_load_results.uuid, a->uuid, sizeof(mldr_load_results.uuid));
 
-	if (dserver_rpc_set_dyld_info(a->dyld_all_image_infos, a->dyld_all_image_infos_size) < 0)
-	{
-		fprintf(stderr, "Failed to tell darlingserver about our dyld info\n");
+	if (activate_image(taffy_launch_filename, &mldr_load_results) < 0)
 		return -1;
-	}
-
-	uint64_t uuid[2];
-	memcpy(uuid, a->uuid, sizeof(uuid));
-	if (dserver_rpc_set_executable_path(taffy_launch_filename, strlen(taffy_launch_filename), uuid[0], uuid[1]) < 0)
-	{
-		fprintf(stderr, "Failed to tell darlingserver about our executable path\n");
-		return -1;
-	}
-
-	spawn_pipe_close();
-	__mldr_main_stack_top = (void*) a->main_stack_top;
+	taffy_launch_activated = true;
 	return 0;
+}
+
+// What mldr has mapped or reserved, in address order: the shared cache's reservations (all below the stack's growth
+// limit, shared_region_reserve()), the stack setup_space() mapped for the program, then the commpage it ends at.
+static uint32_t taffy_launch_mapped(struct load_results* lr, struct taffy_launch_range* out)
+{
+	static unsigned long cache[SHARED_REGION_MAX_RANGES][2];
+	uint32_t n = 0;
+
+	int k = shared_region_reserved(cache, SHARED_REGION_MAX_RANGES);
+	for (int i = 0; i < k; ++i)
+		out[n++] = (struct taffy_launch_range){ cache[i][0], cache[i][1], TAFFY_LAUNCH_RANGE_SHARED_CACHE, 0 };
+	out[n++] = (struct taffy_launch_range){ lr->stack_top - mldr_stack_size, lr->stack_top, TAFFY_LAUNCH_RANGE_MLDR_STACK, 0 };
+	out[n++] = (struct taffy_launch_range){ commpage_address(true), commpage_address(true) + commpage_length(true),
+		TAFFY_LAUNCH_RANGE_COMMPAGE, 0 };
+	return n;
 }
 
 // Hands the process to the launcher. Never returns: when the launcher fails, mldr exits with its error.
 static void taffy_launch_run(const char* filepath, struct load_results* lr)
 {
-	struct taffy_launch_darling launch;
-	memset(&launch, 0, sizeof(launch));
+	// static: argv, envp and everything reachable from the struct must outlive this frame (taffy_launch.h)
+	static struct taffy_launch_darling launch;
+	static struct taffy_launch_range mapped[SHARED_REGION_MAX_RANGES + 2];
+	static char darwin_path[4096];
+	static char root_path[4096];
+	static char kernfd_str[sizeof("kernfd=-2147483648")];
+	static char elf_calls_str[sizeof("elf_calls=") + 16];
+	static const char* apple_extra[3];
 
-	taffy_launch_filename = filepath;
+	if (strlen(filepath) >= sizeof(taffy_launch_filename))
+	{
+		fprintf(stderr, "File path was too big\n");
+		exit(1);
+	}
+	strcpy(taffy_launch_filename, filepath);
+	if (darwin_executable_path(filepath, lr, darwin_path, sizeof(darwin_path)) == NULL)
+	{
+		fprintf(stderr, "File path was too big\n");
+		exit(1);
+	}
 	elfcalls_make(&_elfcalls);
 
+	memset(&launch, 0, sizeof(launch));
 	launch.version = TAFFY_LAUNCH_DARLING_VERSION;
 	launch.size = sizeof(launch);
 	launch.argc = lr->argc;
 	launch.argv = lr->argv;
 	launch.envc = lr->envc;
 	launch.envp = lr->envp;
-	launch.executable_path = filepath;
+	launch.executable_path = taffy_launch_filename;
+	launch.darwin_executable_path = darwin_path;
 
 	launch.root_fd = -1;
 	if (lr->root_path != NULL)
 	{
-		launch.root_path = lr->root_path;
-		launch.root_path_length = lr->root_path_length;
-		launch.root_fd = open(lr->root_path, O_PATH | O_DIRECTORY | O_CLOEXEC);
-		if (launch.root_fd < 0)
+		if (lr->root_path_length >= sizeof(root_path))
 		{
-			fprintf(stderr, "mldr: " TAFFY_LAUNCH_ENV ": cannot open the vchroot %s: %s\n", lr->root_path, strerror(errno));
+			fprintf(stderr, "mldr: " TAFFY_LAUNCH_ENV ": the vchroot path is too long\n");
 			exit(1);
 		}
+		memcpy(root_path, lr->root_path, lr->root_path_length);
+		root_path[lr->root_path_length] = '\0';
+		launch.root_path = root_path;
+		launch.root_path_length = lr->root_path_length;
+
+		// at the top of the descriptor table with mldr's own sockets, out of the way of the program's dup2() and
+		// closefrom(), and never handed out again
+		int tmp = open(root_path, O_PATH | O_DIRECTORY | O_CLOEXEC);
+		int fd = tmp < 0 ? -1 : socket_bitmap_get(&socket_bitmap);
+		if (tmp < 0 || fd < 0 || dup3(tmp, fd, O_CLOEXEC) < 0)
+		{
+			fprintf(stderr, "mldr: " TAFFY_LAUNCH_ENV ": cannot open the vchroot %s: %s\n", root_path, strerror(errno));
+			exit(1);
+		}
+		close(tmp);
+		launch.root_fd = fd;
 	}
-	launch.system_root = SYSTEM_ROOT;
 
 	launch.kernfd = lr->kernfd;
 	launch.elf_calls = &_elfcalls;
+	// as setup_stack64() formats them (stack.c)
+	snprintf(kernfd_str, sizeof(kernfd_str), "kernfd=%d", lr->kernfd);
+	snprintf(elf_calls_str, sizeof(elf_calls_str), "elf_calls=%lx", (unsigned long)(uintptr_t)&_elfcalls);
+	apple_extra[0] = kernfd_str;
+	apple_extra[1] = elf_calls_str;
+	apple_extra[2] = NULL;
+	launch.apple_extra = apple_extra;
 
-	launch.commpage_address = commpage_address(true);
-	launch.mldr_stack_top = lr->stack_top;
+	launch.mapped = mapped;
+	launch.mapped_count = taffy_launch_mapped(lr, mapped);
 	memcpy(launch.bprefs, lr->bprefs, sizeof(launch.bprefs));
 	launch.activate = taffy_launch_activate;
 
 	int err = taffy_launch_entry(&launch);
 
+	// the parent's posix_spawn() has already returned: an exit status would read as the program's own
+	if (taffy_launch_activated)
+	{
+		fprintf(stderr, "mldr: " TAFFY_LAUNCH_ENV ": the launcher returned %d after activating %s\n", err, filepath);
+		abort();
+	}
 	// the launcher's XNU errno goes to the parent's posix_spawn() (spawn_pipe_fail(), at exit)
 	if (err > 0)
 		spawn_error = err;
