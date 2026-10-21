@@ -49,6 +49,9 @@ along with Darling.  If not, see <http://www.gnu.org/licenses/>.
 char *prefix;
 uid_t g_originalUid, g_originalGid;
 bool g_fixPermissions = false;
+// how long, in seconds, connectToShellspawn waits for shellspawn: a prefix this CLI started gets up to 15 s; a running
+// one 2 s, for one that another CLI is still starting
+int g_shellspawnWait = 2;
 char g_workingDirectory[4096];
 
 int main(int argc, char ** argv)
@@ -172,23 +175,11 @@ int main(int argc, char ** argv)
 	// If prefix's init is not running, start it up
 	if (pidInit == 0)
 	{
-		char socketPath[4096];
-		
-		snprintf(socketPath, sizeof(socketPath), "%s"  SHELLSPAWN_SOCKPATH, prefix);
-		
-		unlink(socketPath);
-		
 		setupWorkdir();
 		pidInit = spawnInitProcess();
 		putInitPid(pidInit);
-		
-		// Wait until shellspawn starts
-		for (int i = 0; i < 15; i++)
-		{
-			if (access(socketPath, F_OK) == 0)
-				break;
-			sleep(1);
-		}
+		// shellspawn isn't up yet: connectToShellspawn waits for it
+		g_shellspawnWait = 15;
 	}
 
 #if USE_LINUX_4_11_HACK
@@ -552,36 +543,46 @@ static size_t escapeQuotes(char *dest, const char *src)
 	return len;
 }
 
+// Connects to shellspawn. main calls it after joinNamespace, so the path resolves as shellspawn's own does: on the
+// overlay darlingserver mounts on the prefix (or, without overlayfs, on the copy of the system root in it), where /var
+// is the system root's symlink to private/var. Outside that namespace the prefix is the overlay's upper layer alone,
+// with no /var: the socket can't be found from there. A shellspawn that isn't up yet has no socket (darlingserver
+// empties /var/run before spawnInitProcess returns) or one that refuses (the file exists from bind(), before
+// listen()): both are tried again every 50 ms, for up to g_shellspawnWait seconds, then it fails, saying why.
 int connectToShellspawn(void)
 {
-	struct sockaddr_un addr;
+	struct sockaddr_un addr = { .sun_family = AF_UNIX };
 	int sockfd;
 
-	// Connect to the shellspawn daemon in the container
-	addr.sun_family = AF_UNIX;
-#if USE_LINUX_4_11_HACK
-	addr.sun_path[0] = '\0';
-	
-	strcpy(addr.sun_path, prefix);
-	strcat(addr.sun_path, SHELLSPAWN_SOCKPATH);
-#else
-	snprintf(addr.sun_path, sizeof(addr.sun_path), "%s"  SHELLSPAWN_SOCKPATH, prefix);
-#endif
-
-	sockfd = socket(AF_UNIX, SOCK_STREAM, 0);
-	if (sockfd == -1)
+	if (strlen(prefix) + strlen(SHELLSPAWN_SOCKPATH) >= sizeof(addr.sun_path))
 	{
-		fprintf(stderr, "Error creating a unix domain socket: %s\n", strerror(errno));
+		fprintf(stderr, "Prefix path too long for shellspawn's socket: %zu bytes at most\n",
+			sizeof(addr.sun_path) - 1 - strlen(SHELLSPAWN_SOCKPATH));
 		exit(1);
 	}
+	snprintf(addr.sun_path, sizeof(addr.sun_path), "%s" SHELLSPAWN_SOCKPATH, prefix);
 
-	if (connect(sockfd, (struct sockaddr*) &addr, sizeof(addr)) == -1)
+	for (int tries = g_shellspawnWait * 20; ; tries--)
 	{
-		fprintf(stderr, "Error connecting to shellspawn in the container (%s): %s\n", addr.sun_path, strerror(errno));
-		exit(1);
-	}
+		sockfd = socket(AF_UNIX, SOCK_STREAM, 0);
+		if (sockfd == -1)
+		{
+			fprintf(stderr, "Error creating a unix domain socket: %s\n", strerror(errno));
+			exit(1);
+		}
 
-	return sockfd;
+		if (connect(sockfd, (struct sockaddr*) &addr, sizeof(addr)) == 0)
+			return sockfd;
+
+		int err = errno;
+		close(sockfd);
+		if ((err != ENOENT && err != ECONNREFUSED) || tries <= 0)
+		{
+			fprintf(stderr, "Error connecting to shellspawn in the container (%s): %s\n", addr.sun_path, strerror(err));
+			exit(1);
+		}
+		usleep(50 * 1000);
+	}
 }
 
 void setupShellspawnEnv(int sockfd)
