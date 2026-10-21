@@ -1,11 +1,15 @@
-// libkqueue's walk over the live kqueues (willi/darling-libkqueue: kqueue_foreach(), kqueue_free(), kqueue_atfork()).
-// Every close() of a descriptor walks the process's kqueues to delete the descriptor's knotes. That walk used to scan
-// a table with a slot for every descriptor RLIMIT_NOFILE's hard limit allows (1,048,576 in a Docker container), about
-// 1 ms a close(), which was most of lsd's CPU on a device's first boot. It now walks a list of the live kqueues.
-// The checks: the walk still reaches every kqueue (one reached only through a dup() too), a kqueue's descriptors go
-// with it, a fork's child has none of them, the walk survives kqueues being created and closed while it runs, and a
-// close() costs about the same with a kqueue in the process as before the first one. It only relies on XNU's
-// interface, so it runs on macOS too.
+// libkqueue's kqueues and their descriptors (willi/darling-libkqueue: kqueue_foreach(), kqueue_close(), kqueue_dup(),
+// kqueue_free(), kqueue_atfork()). Every close() of a descriptor walks the process's kqueues to delete the descriptor's
+// knotes. That walk used to scan a table with a slot for every descriptor RLIMIT_NOFILE's hard limit allows (1,048,576
+// in our containers): 1-2 ms a close(), which was most of lsd's CPU in a device's first data migration. It now walks a
+// list of the live kqueues.
+//
+// The checks: the walk still reaches every kqueue (one reached only through a dup() too); a kqueue's descriptors are
+// closed with it, and each dup() of it counts once, whatever dup2() does to them; a fork's child has none of them; the
+// walk survives kqueues being created and closed while it runs; and a close() costs about the same with a kqueue in the
+// process as before the first one. That last check catches the old scan only when the hard limit is large (it was 16
+// times cheaper at 65,536) and when no kqueue exists before main(). It only relies on XNU's interface, so it runs on
+// macOS too.
 //
 // Prints one "ok"/"not ok" line per check; the exit status is the number of failed checks.
 
@@ -102,8 +106,8 @@ static bool is_kqueue(int fd)
 	return kevent64(fd, NULL, 0, &kev, 1, 0, &zero) >= 0;
 }
 
-// whether a fork's child still has fd from its parent: a kqueue isn't inherited, so the descriptor is closed
-static bool inherited(int fd)
+// whether fd is open at all, or still a kqueue
+static bool open_or_kqueue(int fd)
 {
 	return fcntl(fd, F_GETFD) != -1 || is_kqueue(fd);
 }
@@ -137,6 +141,8 @@ int main(void)
 	char detail[160];
 	struct rlimit rl;
 
+	alarm(120); // a deadlock fails the test rather than hanging it
+
 	// before the process has a kqueue, a close() walks nothing at all
 	uint64_t before = close_cost();
 	int first = kqueue();
@@ -162,17 +168,44 @@ int main(void)
 	check(strcmp(detail, "knote left in:") == 0, "close() deletes the knotes in every kqueue", detail);
 	close(p[1]);
 
-	// a kqueue reached only through its dup works; once that is closed too, neither descriptor is a kqueue
+	// a kqueue reached only through its dup works; once that is closed too, both descriptors are closed
 	check(works(d), "a kqueue works through its dup after the original is closed", "its timer didn't fire");
 	close(d);
-	check(!is_kqueue(d) && !is_kqueue(c), "a kqueue's descriptors go with it", "kevent() still took one");
+	check(!open_or_kqueue(d) && !open_or_kqueue(c), "a kqueue's descriptors are closed with it", "one is still open");
+
+	// each descriptor of a kqueue counts once: closing them all closes the kqueue, and closing one doesn't, whatever
+	// dup2() did to them
+	int k = kqueue();
+	dup2(k, k);
+	close(k);
+	check(!open_or_kqueue(k), "dup2() of a kqueue onto itself adds nothing", "the kqueue outlived its close()");
+	k = kqueue();
+	int k2 = dup(k);
+	close(k2);
+	check(!open_or_kqueue(k2) && works(k), "close() of a dup closes that descriptor only", "wrong one closed");
+	dup2(k, k2);
+	close(k2);
+	check(works(k), "a kqueue survives dup2() onto a closed dup, and that dup's close()", "its timer didn't fire");
+	k2 = dup(k);
+	close(k);
+	dup2(k2, k);
+	close(k2);
+	check(works(k), "a kqueue survives dup2() onto its closed first descriptor, and the dup's close()",
+		"its timer didn't fire");
+	dup2(k, k);
+	k2 = dup(k);
+	dup2(k, k2);
+	close(k);
+	check(works(k2), "dup2() onto a live dup leaves one descriptor's worth", "its timer didn't fire");
+	close(k2);
+	check(!open_or_kqueue(k2) && !open_or_kqueue(k), "and closing the last closes it", "one is still open");
 
 	// a fork's child has none of the parent's kqueues, its own work, and its close()s still walk them
 	int e = dup(a);
 	pid_t pid = fork();
 	if (pid == 0)
 	{
-		int bad = inherited(a) + inherited(e) + inherited(b) + inherited(first);
+		int bad = open_or_kqueue(a) + open_or_kqueue(e) + open_or_kqueue(b) + open_or_kqueue(first);
 		int kq = kqueue();
 		int q[2];
 		bool ok = pipe(q) == 0 && watch_read(kq, q[0]) && works(kq);
