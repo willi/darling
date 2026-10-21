@@ -33,6 +33,7 @@ along with Darling.  If not, see <http://www.gnu.org/licenses/>.
 #include <dlfcn.h>
 #include <endian.h>
 #include "commpage.h"
+#include "shared_region.h"
 #include "loader.h"
 #include <sys/resource.h>
 #include <sys/prctl.h>
@@ -1017,6 +1018,15 @@ static void setup_space(struct load_results* lr, bool is_64_bit) {
 		fprintf(stderr, "Failed to allocate stack of %lu bytes: %d (%s)\n", size, err, strerror(err));
 		exit(1);
 	}
+
+#ifdef __x86_64__
+	// the iOS Simulator's dyld shared cache, which dyld_sim maps with MAP_FIXED (shared_region.c)
+	if (is_64_bit && shared_region_reserve() == SHARED_REGION_TAKEN) {
+		redraw_layout(lr->argv, "the simulator's shared cache");
+		fprintf(stderr, "Cannot keep the simulator's shared cache range free: something else is there\n");
+		exit(1);
+	}
+#endif
 
 	// no redraw_layout() below this line
 	unset_special_env();
