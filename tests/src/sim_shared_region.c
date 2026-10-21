@@ -8,13 +8,15 @@
 // process; the root here has nothing in it, so this program's own libraries load from the usual paths) and the cache:
 // - a cache laid out as an iOS 26 runtime's, a main file and five sub-caches, at the root's com.apple.dyld path: in
 //   every child, each range is reserved, with no commit charge, nothing else in it, and dyld_sim's MAP_FIXED over it
-//   works.
+//   works. It is the one reserved for when DYLD_SHARED_CACHE_DIR names another, and with DYLD_SHARED_REGION=avoid,
+//   which dyld_sim ignores for a cache in the root.
 // - "wide", one 2 GiB range in the stack's 16 GiB, from DYLD_SHARED_CACHE_DIR: about an eighth of the layouts take it.
 //   With DYLD_SHARED_REGION=avoid (dyld_sim maps no cache, mldr reserves nothing) some children have something in the
 //   range: the check can fail. Without it, none: mldr took another layout each time.
 // (mldr giving up after 8 layouts can't be forced from here: a range the stack is always in reaches mldr's own stack,
 // which mldr refuses to reserve for.)
-// The children's address spaces are read in /proc, through /Volumes/SystemRoot (the Linux root).
+// The children's address spaces are read in /proc, through /Volumes/SystemRoot (the Linux root). The check that can
+// fail is skipped when Linux doesn't randomize the layout (randomize_va_space 0, or the process's personality).
 //
 // Prints one "ok"/"not ok" line per check; the exit status is the number of failed checks.
 
@@ -40,7 +42,16 @@ extern int _NSGetExecutablePath(char* buf, uint32_t* size); // <mach-o/dyld.h>
 #define MAX_RANGES 32
 
 // the children's exit statuses
-enum { CHILD_OK, CHILD_NOT_RESERVED = 10, CHILD_OCCUPIED, CHILD_CHARGED, CHILD_MAP_FIXED, CHILD_NO_MAPS, CHILD_USAGE };
+enum {
+	CHILD_OK,
+	CHILD_NOT_RESERVED = 10,
+	CHILD_OCCUPIED,
+	CHILD_CHARGED,
+	CHILD_MAP_FIXED,
+	CHILD_NO_MAPS,
+	CHILD_USAGE,
+	CHILD_RESERVED,
+};
 
 static int failed;
 
@@ -60,7 +71,8 @@ struct range {
 static void put32(unsigned char* p, uint32_t v) { memcpy(p, &v, sizeof(v)); }
 static void put64(unsigned char* p, uint64_t v) { memcpy(p, &v, sizeof(v)); }
 
-// One cache file: a dyld_cache_header (dyld-1378 dyld_cache_format.h; the fields mldr reads) and its mapping table,
+// One cache file: a dyld_cache_header (dyld-1378 include/mach-o/dyld_cache_format.h; the fields mldr reads, at their
+// offsets in that struct, checked with offsetof) and its mapping table,
 // then, for a main file with sub-caches, their entries. dyn: the dynamic data page's offset from BASE, 0 for none.
 static int write_cache_file(const char* path, const struct range* m, int n, int subs, uint64_t dyn)
 {
@@ -163,18 +175,20 @@ static int occupied(char* maps, const struct range* r, int n, int reserve)
 	return 0;
 }
 
-// The file at path, one NUL-terminated string per line, then an empty one.
-static char* slurp(const char* path)
+// The file at path in buf, one NUL-terminated string per line, then an empty one; NULL if it can't be read, or
+// doesn't fit (its last lines, where the cache's ranges are, would be missing).
+static char* slurp(const char* path, char* buf, size_t size)
 {
-	static char buf[1 << 20];
 	int fd = open(path, O_RDONLY);
 	if (fd < 0)
 		return NULL;
 	size_t len = 0;
 	ssize_t k;
-	while (len < sizeof(buf) - 2 && (k = read(fd, buf + len, sizeof(buf) - 2 - len)) > 0)
+	while (len < size - 2 && (k = read(fd, buf + len, size - 2 - len)) > 0)
 		len += k;
 	close(fd);
+	if (len == size - 2)
+		return NULL;
 	buf[len] = buf[len + 1] = '\0';
 	for (char* p = buf; (p = strchr(p, '\n')); )
 		*p++ = '\0';
@@ -202,10 +216,12 @@ static int charged(char* smaps, const struct range* r, int n)
 	return 0;
 }
 
-// child reserve|free LO HI ...: "reserve": mldr should have reserved the ranges; "free": it shouldn't have (no cache),
-// and the child only says whether anything is in them.
+// child reserve|free|unreserved LO HI ...: "reserve": mldr should have reserved the ranges; "free": it shouldn't have
+// (no cache), and the child only says whether anything is in them; "unreserved": they aren't reserved (another cache
+// was taken).
 static int child(int argc, char** argv)
 {
+	static char maps_buf[1 << 20], smaps_buf[4 << 20];
 	struct range r[MAX_RANGES];
 	int n = 0, reserve = strcmp(argv[2], "reserve") == 0;
 
@@ -214,9 +230,16 @@ static int child(int argc, char** argv)
 	if (n == 0)
 		return CHILD_USAGE;
 
-	char* maps = slurp("/Volumes/SystemRoot/proc/self/maps");
+	char* maps = slurp("/Volumes/SystemRoot/proc/self/maps", maps_buf, sizeof(maps_buf));
 	if (!maps)
 		return CHILD_NO_MAPS;
+	if (strcmp(argv[2], "unreserved") == 0) {
+		for (int i = 0; i < n; ++i) {
+			if (reserved(maps, r[i].lo, r[i].hi))
+				return CHILD_RESERVED;
+		}
+		return CHILD_OK;
+	}
 	if (occupied(maps, r, n, reserve))
 		return CHILD_OCCUPIED;
 	if (!reserve)
@@ -225,7 +248,7 @@ static int child(int argc, char** argv)
 		if (!reserved(maps, r[i].lo, r[i].hi))
 			return CHILD_NOT_RESERVED;
 	}
-	char* smaps = slurp("/Volumes/SystemRoot/proc/self/smaps");
+	char* smaps = slurp("/Volumes/SystemRoot/proc/self/smaps", smaps_buf, sizeof(smaps_buf));
 	if (!smaps)
 		return CHILD_NO_MAPS;
 	if (charged(smaps, r, n))
@@ -245,9 +268,10 @@ static int child(int argc, char** argv)
 
 static char self[1024];
 
-// Spawns this program as a child for the ranges, with DYLD_ROOT_PATH=root, the cache directory (NULL: none) and
-// DYLD_SHARED_REGION=avoid if avoid. Returns its exit status, -1 if it didn't exit (or wasn't spawned).
-static int spawn_child(const char* root, const char* dir, int avoid, const struct range* r, int n)
+// Spawns this program as a child (mode: child()'s) for the ranges, with DYLD_ROOT_PATH=root, the cache directory
+// (NULL: none) and DYLD_SHARED_REGION=avoid if avoid. Returns its exit status, -1 if it didn't exit (or wasn't
+// spawned).
+static int spawn_child(const char* root, const char* dir, int avoid, char* mode, const struct range* r, int n)
 {
 	char rootv[1100], dirv[1100], hex[MAX_RANGES * 2][20];
 	char* argv[3 + MAX_RANGES * 2 + 1];
@@ -256,7 +280,7 @@ static int spawn_child(const char* root, const char* dir, int avoid, const struc
 
 	argv[a++] = self;
 	argv[a++] = "child";
-	argv[a++] = avoid ? "free" : "reserve";
+	argv[a++] = mode;
 	for (int i = 0; i < n; ++i) {
 		snprintf(hex[2 * i], sizeof(hex[0]), "%llx", r[i].lo);
 		snprintf(hex[2 * i + 1], sizeof(hex[0]), "%llx", r[i].hi);
@@ -289,14 +313,15 @@ static int spawn_child(const char* root, const char* dir, int avoid, const struc
 	return WEXITSTATUS(status);
 }
 
-// Runs `runs` children; counts their exit statuses into ok (0), other (anything else), with the first other in first.
-static void spawn_children(int runs, const char* root, const char* dir, int avoid, const struct range* r, int n,
-	int* ok, int* occupied_n, int* other, int* first)
+// Runs `runs` children; counts their exit statuses into ok (0), occupied_n, other (anything else), with the first
+// other in first.
+static void spawn_children(int runs, const char* root, const char* dir, int avoid, char* mode, const struct range* r,
+	int n, int* ok, int* occupied_n, int* other, int* first)
 {
 	*ok = *occupied_n = *other = 0;
 	*first = 0;
 	for (int i = 0; i < runs; ++i) {
-		int s = spawn_child(root, dir, avoid, r, n);
+		int s = spawn_child(root, dir, avoid, mode, r, n);
 		if (s == CHILD_OK)
 			++*ok;
 		else if (s == CHILD_OCCUPIED)
@@ -304,6 +329,29 @@ static void spawn_children(int runs, const char* root, const char* dir, int avoi
 		else if (!(*other)++)
 			*first = s;
 	}
+}
+
+// Whether Linux randomizes this process's layout: randomize_va_space isn't 0, and its personality hasn't
+// ADDR_NO_RANDOMIZE (setarch -R)
+static int randomized(void)
+{
+	char buf[64];
+	int fd = open("/Volumes/SystemRoot/proc/sys/kernel/randomize_va_space", O_RDONLY);
+	ssize_t k = fd >= 0 ? read(fd, buf, sizeof(buf) - 1) : -1;
+	if (fd >= 0)
+		close(fd);
+	if (k > 0 && buf[0] == '0')
+		return 0;
+	fd = open("/Volumes/SystemRoot/proc/self/personality", O_RDONLY);
+	k = fd >= 0 ? read(fd, buf, sizeof(buf) - 1) : -1;
+	if (fd >= 0)
+		close(fd);
+	if (k > 0) {
+		buf[k] = '\0';
+		if (strtoul(buf, NULL, 16) & 0x0040000) // ADDR_NO_RANDOMIZE
+			return 0;
+	}
+	return 1;
 }
 
 static int mkdirs(const char* base, const char* rel)
@@ -329,7 +377,7 @@ int main(int argc, char** argv)
 
 	uint32_t size = sizeof(self);
 	char dir[] = "/Volumes/SystemRoot/tmp/sim_shared_region.XXXXXX";
-	char root[1024], noroot[1024], cache[1024], wide[1024], line[256];
+	char root[1024], noroot[1024], cache[1024], wide[1024], otherdir[1024], line[320];
 	struct range layout[MAX_RANGES];
 	int ok, occ, other, first, n;
 
@@ -347,25 +395,49 @@ int main(int argc, char** argv)
 		goto out;
 	}
 
-	spawn_children(20, root, NULL, 0, layout, n, &ok, &occ, &other, &first);
+	// one range: an eighth of the stack's 16 GiB. dyld_sim maps a cache's first mapping at 0x7FF800000000 and the
+	// others at their offsets from it, so these caches start with a page there.
+	struct range w = { STACK_LO + 4 * G, STACK_LO + 6 * G };
+	struct range wm[2] = { { BASE, BASE + 0x4000 }, w };
+	char path[1100];
+	snprintf(path, sizeof(path), "%s/dyld_sim_shared_cache_x86_64", wide);
+	if (write_cache_file(path, wm, 2, 0, 0) != 0) {
+		check(0, "setup: the wide cache");
+		goto out;
+	}
+
+	spawn_children(20, root, NULL, 0, "reserve", layout, n, &ok, &occ, &other, &first);
 	snprintf(line, sizeof(line), "an iOS 26 cache's %d ranges are reserved, alone, uncharged, and MAP_FIXED maps over "
 		"them, in each of 20 children (%d did; %d had something in them; %d failed otherwise, the first with %d)", n, ok,
 		occ, other, first);
 	check(ok == 20, line);
 
-	// one range: an eighth of the stack's 16 GiB
-	struct range w = { STACK_LO + 4 * G, STACK_LO + 6 * G };
-	char path[1100];
-	snprintf(path, sizeof(path), "%s/dyld_sim_shared_cache_x86_64", wide);
-	if (write_cache_file(path, &w, 1, 0, 0) != 0) {
-		check(0, "setup: the wide cache");
+	// dyld_sim takes the root's cache over DYLD_SHARED_CACHE_DIR's (one 1 GiB range above the root's), and over
+	// DYLD_SHARED_REGION=avoid
+	struct range o = { STACK_LO + 9 * G, STACK_LO + 10 * G };
+	struct range om[2] = { { BASE, BASE + 0x4000 }, o };
+	snprintf(path, sizeof(path), "%s/other/dyld_sim_shared_cache_x86_64", dir);
+	snprintf(otherdir, sizeof(otherdir), "%s/other", dir);
+	if (mkdirs(dir, "other") != 0 || write_cache_file(path, om, 2, 0, 0) != 0) {
+		check(0, "setup: the other cache");
 		goto out;
 	}
-	spawn_children(200, noroot, wide, 1, &w, 1, &ok, &occ, &other, &first);
+	int ok2, ok3;
+	spawn_children(5, root, otherdir, 0, "reserve", layout, n, &ok, &occ, &other, &first);
+	spawn_children(5, root, otherdir, 0, "unreserved", &o, 1, &ok2, &occ, &other, &first);
+	spawn_children(5, root, NULL, 1, "reserve", layout, n, &ok3, &occ, &other, &first);
+	snprintf(line, sizeof(line), "the root's cache is the one reserved for: with DYLD_SHARED_CACHE_DIR naming another "
+		"(%d of 5; the other's range unreserved in %d of 5), and with DYLD_SHARED_REGION=avoid (%d of 5)", ok, ok2, ok3);
+	check(ok == 5 && ok2 == 5 && ok3 == 5, line);
+
+	spawn_children(200, noroot, wide, 1, "free", &w, 1, &ok, &occ, &other, &first);
 	snprintf(line, sizeof(line), "without a reservation, something is in a range in an eighth of the stack's 16 GiB "
 		"in some of 200 children (%d; %d clear; %d failed, the first with %d)", occ, ok, other, first);
-	check(occ > 0 && other == 0, line);
-	spawn_children(200, noroot, wide, 0, &w, 1, &ok, &occ, &other, &first);
+	if (randomized())
+		check(occ > 0 && other == 0, line);
+	else
+		printf("ok - # skip: Linux doesn't randomize this layout: %s\n", line);
+	spawn_children(200, noroot, wide, 0, "reserve", &w, 1, &ok, &occ, &other, &first);
 	snprintf(line, sizeof(line), "with it, the range is reserved and alone in each of 200 children (%d were; %d had "
 		"something in it; %d failed otherwise, the first with %d)", ok, occ, other, first);
 	check(ok == 200, line);

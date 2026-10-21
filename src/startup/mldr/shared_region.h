@@ -13,7 +13,10 @@ enum shared_region_result {
 	SHARED_REGION_TAKEN,
 };
 
-enum shared_region_result shared_region_reserve(void);
+// For a process that will map the iOS Simulator's dyld shared cache (shared_region.c): TAKEN when something is in its
+// ranges, else OK, with the ranges reserved. limit: the lowest address of the main thread's stack, as far as it may
+// grow; a cache reaching above it isn't reserved for.
+enum shared_region_result shared_region_reserve(unsigned long limit);
 
 #ifdef __cplusplus
 }

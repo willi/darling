@@ -924,8 +924,9 @@ void __mldr_close_process_lifetime_pipe(int fd) {
 	}
 }
 
-// How many address space layouts mldr tries before it gives up (redraw_layout()). Each is taken with a chance of about
-// 1 in 40,000 (64-bit), so a second is already rare.
+// How many address space layouts mldr tries before it gives up (redraw_layout()). The commpage's and the stack's
+// ranges are taken with a chance of about 1 in 40,000 (64-bit). A simulator process's shared cache ranges add about 1
+// in 16 with an iOS 26 cache (shared_region.c), so all 8 are taken fewer than once in 10^9 such starts.
 #define LAYOUT_DRAWS 8
 
 // execs path (mldr itself, or mldr32) with argv and the current environment, handing posix_spawn()'s pipe on where it
@@ -951,8 +952,10 @@ static int exec_self(const char* path, char** argv)
 // At each exec the kernel puts the Linux stack, and the vDSO just above it, at a random place in the 16 GiB under the
 // top of the address space (64-bit; 8 MiB for a 32-bit process). Now and then they take the commpage's address, or
 // the stack's range just under it (on Linux 6.6, x86_64: 23 execs in 10^6). The commpage's address is also refused
-// when it is free but within the stack's guard gap (1 MiB) under the Linux stack. mldr then execs itself again for a
-// new layout, with the same arguments and environment.
+// when it is free but within the stack's guard gap (1 MiB) under the Linux stack. For a simulator process, they, or
+// mldr's first mappings, can also be in the ranges of the shared cache dyld_sim will map (about 1 exec in 16 with an
+// iOS 26 cache; shared_region.c). mldr then execs itself again for a new layout, with the same arguments and
+// environment.
 //
 // It must run before anything a second exec would undo or repeat: before main() rewrites argv and envp, before
 // unset_special_env(), before mldr checks in with darlingserver, and before posix_spawn()'s pipe is closed.
@@ -1020,8 +1023,10 @@ static void setup_space(struct load_results* lr, bool is_64_bit) {
 	}
 
 #ifdef __x86_64__
-	// the iOS Simulator's dyld shared cache, which dyld_sim maps with MAP_FIXED (shared_region.c)
-	if (is_64_bit && shared_region_reserve() == SHARED_REGION_TAKEN) {
+	// the iOS Simulator's dyld shared cache, which dyld_sim maps with MAP_FIXED (shared_region.c), below the main
+	// thread's stack as far as it may grow (RLIMIT_STACK; 8 MiB without one) and its guard gap
+	unsigned long grow = (limit.rlim_cur == RLIM_INFINITY || limit.rlim_cur > (1UL << 30)) ? (8UL << 20) : limit.rlim_cur;
+	if (is_64_bit && shared_region_reserve(lr->stack_top - grow - 0x100000) == SHARED_REGION_TAKEN) {
 		redraw_layout(lr->argv, "the simulator's shared cache");
 		fprintf(stderr, "Cannot keep the simulator's shared cache range free: something else is there\n");
 		exit(1);
