@@ -200,6 +200,27 @@ int main(void)
 	close(k2);
 	check(!open_or_kqueue(k2) && !open_or_kqueue(k), "and closing the last closes it", "one is still open");
 
+	// a closed descriptor is not the kqueue's, even while a dup keeps the kqueue, and closing it again drops nothing
+	k = kqueue();
+	k2 = dup(k);
+	close(k);
+	check(!is_kqueue(k) && works(k2), "a kqueue's closed first descriptor is not a kqueue", "kevent() took it");
+	close(k);
+	check(works(k2), "a second close() of it leaves the kqueue to its dup", "its timer didn't fire");
+	close(k2);
+
+	// dup2() of another file onto a kqueue's dup takes that descriptor from the kqueue
+	int f = open("/dev/null", O_RDONLY);
+	k = kqueue();
+	k2 = dup(k);
+	dup2(f, k2);
+	check(!is_kqueue(k2) && works(k), "dup2() of a file onto a kqueue's dup replaces it", "kevent() still took it");
+	close(k);
+	check(!open_or_kqueue(k) && fcntl(k2, F_GETFD) != -1, "and the kqueue goes with its last descriptor",
+		"the kqueue is still open, or the file isn't");
+	close(k2);
+	close(f);
+
 	// a fork's child has none of the parent's kqueues, its own work, and its close()s still walk them
 	int e = dup(a);
 	pid_t pid = fork();
