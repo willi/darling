@@ -33,6 +33,15 @@ target_link_libraries(mldr PRIVATE -lrt -ldl mldr_dserver_rpc -lm)
 
 install(TARGETS mldr DESTINATION libexec/darling/usr/libexec/darling)
 
+# tests/src/taffy_launch.c's stand-in for a TAFFY_LAUNCH launcher (taffy_launch.h), installed next to that test and not
+# executable, so run-all.sh doesn't take it for a test
+add_library(taffy_launch_stub SHARED taffy_launch_stub.c)
+set_target_properties(taffy_launch_stub PROPERTIES PREFIX "" OUTPUT_NAME taffy_launch_stub)
+install(TARGETS taffy_launch_stub
+	LIBRARY DESTINATION libexec/darling/usr/libexec/darling-tests
+	PERMISSIONS OWNER_READ OWNER_WRITE GROUP_READ WORLD_READ
+	COMPONENT tests)
+
 configure_file(darling.conf.in darling.conf @ONLY)
 install(FILES "${CMAKE_CURRENT_BINARY_DIR}/darling.conf" DESTINATION lib/binfmt.d)
 

@@ -74,5 +74,6 @@ darling_test(spawn_errno)
 darling_test(shellspawn_exit)
 darling_test(priority)
 darling_test(sim_shared_region)
+darling_test(taffy_launch)
 
 install(PROGRAMS run-all.sh DESTINATION libexec/darling/usr/libexec/darling-tests)

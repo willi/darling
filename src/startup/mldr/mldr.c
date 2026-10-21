@@ -35,6 +35,7 @@ along with Darling.  If not, see <http://www.gnu.org/licenses/>.
 #include "commpage.h"
 #include "shared_region.h"
 #include "loader.h"
+#include "taffy_launch.h"
 #include <sys/resource.h>
 #include <sys/prctl.h>
 #include <sys/socket.h>
@@ -84,6 +85,13 @@ static void* compatible_mmap(void *addr, size_t length, int prot, int flags, int
 static void setup_stack64(const char* filepath, struct load_results* lr);
 #endif
 static void setup_stack32(const char* filepath, struct load_results* lr);
+
+#ifndef __i386__
+// TAFFY_LAUNCH: an outside launcher maps the image (taffy_launch.h)
+static const char* taffy_launch = NULL;
+static void taffy_launch_prepare(const char* library, struct load_results* lr);
+static void taffy_launch_run(const char* filepath, struct load_results* lr);
+#endif
 
 // this is called when argv[0] specifies an interpreter and we need to "unexpand" it (i.e. convert it from a Linux path to a vchrooted path)
 static void vchroot_unexpand_interpreter(struct load_results* lr);
@@ -212,7 +220,14 @@ int main(int argc, char** argv, char** envp)
 #ifdef __i386__
 	load(filename, CPU_TYPE_X86, false, argv, &mldr_load_results); // accept i386 only
 #else
-	load(filename, 0, false, argv, &mldr_load_results);
+	taffy_launch = getenv(TAFFY_LAUNCH_ENV);
+	if (taffy_launch != NULL && taffy_launch[0] == '\0')
+		taffy_launch = NULL;
+
+	if (taffy_launch != NULL)
+		taffy_launch_prepare(taffy_launch, &mldr_load_results);
+	else
+		load(filename, 0, false, argv, &mldr_load_results);
 #endif
 
 	// this was previously necessary when we were loading the binary from the LKM
@@ -303,6 +318,11 @@ int main(int argc, char** argv, char** envp)
 			memmove(mldr_load_results.envp[i], env_p, len_remaining);
 		}
 	}
+
+#ifndef __i386__
+	if (taffy_launch != NULL)
+		taffy_launch_run(filename, &mldr_load_results);
+#endif
 
 	if (mldr_load_results._32on64)
 		setup_stack32(filename, &mldr_load_results);
@@ -1206,3 +1226,116 @@ static void vchroot_unexpand_interpreter(struct load_results* lr) {
 		lr->argv[0] = unexpanded;
 	}
 };
+
+#ifndef __i386__
+static taffy_launch_darling_fn taffy_launch_entry = NULL;
+static const char* taffy_launch_filename = NULL;
+
+// TAFFY_LAUNCH: load64()'s set-up without the image (the address space, the check-in, the vchroot), then the
+// launcher library. Any failure here is fatal: mldr never falls back to loading the image itself.
+static void taffy_launch_prepare(const char* library, struct load_results* lr)
+{
+	// may exec mldr again for a new layout, so it comes first, as in load64()
+	setup_space(lr, true);
+
+	void* lib = dlopen(library, RTLD_NOW | RTLD_LOCAL);
+	if (lib == NULL)
+	{
+		fprintf(stderr, "mldr: " TAFFY_LAUNCH_ENV ": cannot load %s: %s\n", library, dlerror());
+		exit(1);
+	}
+
+	dlerror();
+	taffy_launch_entry = (taffy_launch_darling_fn) dlsym(lib, TAFFY_LAUNCH_DARLING_ENTRY);
+	if (taffy_launch_entry == NULL)
+	{
+		const char* err = dlerror();
+		fprintf(stderr, "mldr: " TAFFY_LAUNCH_ENV ": %s has no " TAFFY_LAUNCH_DARLING_ENTRY ": %s\n", library,
+			err ? err : "the symbol is NULL");
+		exit(1);
+	}
+}
+
+// what main() does after the stack is set up, with the launcher's values
+static int taffy_launch_activate(const struct taffy_launch_activation* a)
+{
+	if (a == NULL || a->version != TAFFY_LAUNCH_ACTIVATION_VERSION || a->size < sizeof(*a))
+	{
+		fprintf(stderr, "mldr: " TAFFY_LAUNCH_ENV ": activation version %u, size %u; mldr knows version %u, size %zu\n",
+			a ? a->version : 0, a ? a->size : 0, TAFFY_LAUNCH_ACTIVATION_VERSION, sizeof(*a));
+		return -1;
+	}
+
+	mldr_load_results.mh = a->mach_header;
+	mldr_load_results.stack_top = a->main_stack_top;
+	mldr_load_results.dyld_all_image_location = a->dyld_all_image_infos;
+	mldr_load_results.dyld_all_image_size = a->dyld_all_image_infos_size;
+	memcpy(mldr_load_results.uuid, a->uuid, sizeof(mldr_load_results.uuid));
+
+	if (dserver_rpc_set_dyld_info(a->dyld_all_image_infos, a->dyld_all_image_infos_size) < 0)
+	{
+		fprintf(stderr, "Failed to tell darlingserver about our dyld info\n");
+		return -1;
+	}
+
+	uint64_t uuid[2];
+	memcpy(uuid, a->uuid, sizeof(uuid));
+	if (dserver_rpc_set_executable_path(taffy_launch_filename, strlen(taffy_launch_filename), uuid[0], uuid[1]) < 0)
+	{
+		fprintf(stderr, "Failed to tell darlingserver about our executable path\n");
+		return -1;
+	}
+
+	spawn_pipe_close();
+	__mldr_main_stack_top = (void*) a->main_stack_top;
+	return 0;
+}
+
+// Hands the process to the launcher. Never returns: when the launcher fails, mldr exits with its error.
+static void taffy_launch_run(const char* filepath, struct load_results* lr)
+{
+	struct taffy_launch_darling launch;
+	memset(&launch, 0, sizeof(launch));
+
+	taffy_launch_filename = filepath;
+	elfcalls_make(&_elfcalls);
+
+	launch.version = TAFFY_LAUNCH_DARLING_VERSION;
+	launch.size = sizeof(launch);
+	launch.argc = lr->argc;
+	launch.argv = lr->argv;
+	launch.envc = lr->envc;
+	launch.envp = lr->envp;
+	launch.executable_path = filepath;
+
+	launch.root_fd = -1;
+	if (lr->root_path != NULL)
+	{
+		launch.root_path = lr->root_path;
+		launch.root_path_length = lr->root_path_length;
+		launch.root_fd = open(lr->root_path, O_PATH | O_DIRECTORY | O_CLOEXEC);
+		if (launch.root_fd < 0)
+		{
+			fprintf(stderr, "mldr: " TAFFY_LAUNCH_ENV ": cannot open the vchroot %s: %s\n", lr->root_path, strerror(errno));
+			exit(1);
+		}
+	}
+	launch.system_root = SYSTEM_ROOT;
+
+	launch.kernfd = lr->kernfd;
+	launch.elf_calls = &_elfcalls;
+
+	launch.commpage_address = commpage_address(true);
+	launch.mldr_stack_top = lr->stack_top;
+	memcpy(launch.bprefs, lr->bprefs, sizeof(launch.bprefs));
+	launch.activate = taffy_launch_activate;
+
+	int err = taffy_launch_entry(&launch);
+
+	// the launcher's XNU errno goes to the parent's posix_spawn() (spawn_pipe_fail(), at exit)
+	if (err > 0)
+		spawn_error = err;
+	fprintf(stderr, "mldr: " TAFFY_LAUNCH_ENV ": the launcher could not start %s (XNU errno %d)\n", filepath, err);
+	exit(1);
+}
+#endif
