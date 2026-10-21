@@ -1,10 +1,12 @@
 // getpriority() as XNU's nice value (B62). Darling's getpriority() returned Linux's syscall value, 20 - nice: after
 // setpriority(5) it read 15, and nice(1), which sets getpriority() + 1, then put the process at nice 16 (read as 4).
 //
-// - After setpriority(5): 5. After nice(1): 6, from nice() and from getpriority().
+// - After setpriority(19): 19, and nice(1) there stays at 19 (libc's nice() clamps at NZERO - 1). This needs no
+//   privilege, so it runs whoever runs the test; the old code read 1, and its nice(1) asked for 2.
+// - After setpriority(5): 5, and nice(1) then gives 6.
 // - A negative nice value reads as itself: -5 after setpriority(-5).
-// It sets each value first, so it holds whatever nice value it starts at (`nice -n 19` runs gave 19). Skipped where this
-// process may not raise its priority (EACCES or EPERM). It uses only XNU's interface.
+// The last two raise the priority, so they're skipped (an "ok - # skip" line) where the process may not (EACCES or
+// EPERM). It uses only XNU's interface.
 //
 // Prints one "ok"/"not ok" line per check; the exit status is the number of failed checks.
 
@@ -23,13 +25,13 @@ static void check(int ok, const char* what, long got)
 }
 
 // setpriority() of this process; 0 when it may not raise its priority (printing a skip line), else 1
-static int set(int nice)
+static int set(int value)
 {
-	if (setpriority(PRIO_PROCESS, 0, nice) == 0)
+	if (setpriority(PRIO_PROCESS, 0, value) == 0)
 		return 1;
 	if (errno == EACCES || errno == EPERM)
 	{
-		printf("ok - # skip: may not set nice %d\n", nice);
+		printf("ok - # skip: may not set nice %d\n", value);
 		return 0;
 	}
 	check(0, "setpriority succeeds", errno);
@@ -47,6 +49,14 @@ int main(void)
 {
 	int r;
 
+	if (set(19))
+	{
+		r = get();
+		check(r == 19 && errno == 0, "getpriority after setpriority(19): 19", r);
+		errno = 0;
+		r = nice(1);
+		check(r == 19 && errno == 0, "nice(1) at 19: 19", r);
+	}
 	if (set(5))
 	{
 		r = get();
@@ -54,8 +64,6 @@ int main(void)
 		errno = 0;
 		r = nice(1);
 		check(r == 6 && errno == 0, "nice(1) after that: 6", r);
-		r = get();
-		check(r == 6 && errno == 0, "getpriority after nice(1): 6", r);
 	}
 	if (set(-5))
 	{
