@@ -58,6 +58,7 @@ static int spawn(const char* self, const char* library, const char* mode, int* s
 
 int main(int argc, char** argv)
 {
+	(void) argv;
 	// a child that got here was loaded by mldr itself, which the hook must never do
 	if (argc > 1)
 		return 99;
