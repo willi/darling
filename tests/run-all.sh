@@ -9,7 +9,7 @@ out=${TMPDIR:-/private/tmp}/run-all.$$
 failed=0
 ran=0
 for t in "$dir"/*; do
-	case ${t##*/} in run-all.sh) continue ;; esac
+	case ${t##*/} in run-all.sh | *.so) continue ;; esac
 	[ -x "$t" ] || continue
 	"$t" >"$out" 2>&1
 	n=$?
