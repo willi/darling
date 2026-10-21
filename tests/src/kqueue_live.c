@@ -207,6 +207,17 @@ int main(void)
 	check(!is_kqueue(k) && works(k2), "a kqueue's closed first descriptor is not a kqueue", "kevent() took it");
 	close(k);
 	check(works(k2), "a second close() of it leaves the kqueue to its dup", "its timer didn't fire");
+	// a regression guard (#6's third review): kqueue_dup() dropping a descriptor dup2()'d onto itself frees the kqueue
+	dup2(k2, k2);
+	check(works(k2), "dup2() of a kqueue's last descriptor onto itself keeps it", "its timer didn't fire");
+	close(k2);
+
+	// dup2() of a kqueue's closed first descriptor onto its dup: XNU fails it with EBADF, and the dup stays the kqueue's
+	k = kqueue();
+	k2 = dup(k);
+	close(k);
+	dup2(k, k2);
+	check(works(k2), "dup2() of a closed first descriptor onto its dup leaves the dup working", "its timer didn't fire");
 	close(k2);
 
 	// dup2() of another file onto a kqueue's dup takes that descriptor from the kqueue
