@@ -9,6 +9,8 @@ extern "C" {
 
 bool commpage_setup(bool _64bit);
 unsigned long commpage_address(bool _64bit);
+// the length commpage_setup() maps at commpage_address()
+unsigned long commpage_length(bool _64bit);
 
 union cpu_flags1 {
   struct {

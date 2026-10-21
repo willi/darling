@@ -75,32 +75,12 @@ void FUNCTION_NAME(const char* filepath, struct load_results* lr)
 
 	elfcalls_make(&_elfcalls);
 
-	// Produce executable_path=... for applep
-	executable_buf[sizeof(executable_buf) - 1] = '\0';
-	strncpy(executable_buf, filepath, 4096);
-	if (executable_buf[sizeof(executable_buf) - 1] != '\0')
+	// Produce executable_path=... for applep (the same rule as TAFFY_LAUNCH's darwin_executable_path, mldr.c)
+	executable_path = (char*) darwin_executable_path(filepath, lr, executable_buf, sizeof(executable_buf));
+	if (executable_path == NULL)
 	{
 		fprintf(stderr, "File path was too big\n");
 		exit(1);
-	}
-
-	executable_path = executable_buf;
-
-	if (lr->root_path)
-	{
-		exepath_len = strlen(executable_path);
-
-		if (strncmp(executable_path, lr->root_path, lr->root_path_length) == 0)
-		{
-			memmove(executable_buf, executable_path + lr->root_path_length, exepath_len - lr->root_path_length + 1);
-		}
-		else
-		{
-			// FIXME: potential buffer overflow
-			memmove(executable_buf + sizeof(SYSTEM_ROOT) - 1, executable_path, exepath_len + 1);
-			memcpy(executable_buf, SYSTEM_ROOT, sizeof(SYSTEM_ROOT) - 1);
-		}
-		executable_path = executable_buf;
 	}
 
 	// printk(KERN_NOTICE "Stack top: %p\n", bprm->p);
