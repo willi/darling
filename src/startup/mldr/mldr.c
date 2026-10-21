@@ -1037,8 +1037,9 @@ static int exec_self(const char* path, char** argv)
 //
 // It must run before anything a second exec would undo or repeat: before main() rewrites argv and envp, before
 // unset_special_env(), before mldr checks in with darlingserver, and before posix_spawn()'s pipe is closed.
-// setup_space() is the first thing load64()/load32() do, and the only caller. It returns only when it can't (the
-// caller fails as before).
+// setup_space() is the only caller, and the first thing load64()/load32() and taffy_launch_prepare() do. It runs at
+// most once per exec (its `done` guard: after a TAFFY_LAUNCH launcher declines, load64()'s call does nothing), so
+// this is reachable only on that first run. It returns only when it can't (the caller fails as before).
 static void redraw_layout(char** argv, const char* what)
 {
 	char draws[16];
@@ -1067,7 +1068,7 @@ static void redraw_layout(char** argv, const char* what)
 // May exec mldr again (redraw_layout()): nothing above it in load64()/load32() may have side effects.
 static void setup_space(struct load_results* lr, bool is_64_bit) {
 	static bool done = false;
-	// load64() after a TAFFY_LAUNCH launcher declined: taffy_launch_prepare() has set the space up
+	// once per exec: load64() after a TAFFY_LAUNCH launcher declined finds the space taffy_launch_prepare() set up
 	if (done)
 		return;
 	done = true;
@@ -1298,6 +1299,8 @@ static taffy_launch_darling_fn taffy_launch_entry = NULL;
 // the Linux path the launcher was asked to start, kept for activate(): main()'s copy lives on the abandoned stack
 static char taffy_launch_filename[4096];
 static bool taffy_launch_activated = false;
+// any call to activate(), even one it refused: the launcher may no longer decline
+static bool taffy_launch_activate_called = false;
 
 // TAFFY_LAUNCH: load64()'s set-up without the image (the address space, the check-in, the vchroot), then the
 // launcher library. Any failure here is fatal: mldr loads the image itself only when the launcher declines it.
@@ -1327,6 +1330,8 @@ static void taffy_launch_prepare(const char* library, struct load_results* lr)
 // what main() does after the stack is set up, with the launcher's values
 static int taffy_launch_activate(const struct taffy_launch_activation* a)
 {
+	taffy_launch_activate_called = true;
+
 	// lockstep (taffy_launch.h): exactly the version and size mldr was built with
 	if (a == NULL || a->version != TAFFY_LAUNCH_ACTIVATION_VERSION || a->size != sizeof(*a))
 	{
@@ -1404,7 +1409,8 @@ static void taffy_launch_run(const char* filepath, struct load_results* lr)
 	launch.executable_path = taffy_launch_filename;
 	launch.darwin_executable_path = darwin_path;
 
-	launch.root_fd = -1;
+	// kept here, not read back from the struct the launcher was handed, for the close when it declines
+	int root_fd = -1;
 	if (lr->root_path != NULL)
 	{
 		if (lr->root_path_length >= sizeof(root_path))
@@ -1418,7 +1424,7 @@ static void taffy_launch_run(const char* filepath, struct load_results* lr)
 		launch.root_path_length = lr->root_path_length;
 
 		// at the top of the descriptor table with mldr's own sockets, out of the way of the program's dup2() and
-		// closefrom(), and never handed out again
+		// closefrom(), and never handed out again unless the launcher declines
 		int tmp = open(root_path, O_PATH | O_DIRECTORY | O_CLOEXEC);
 		int fd = tmp < 0 ? -1 : socket_bitmap_get(&socket_bitmap);
 		if (tmp < 0 || fd < 0 || dup3(tmp, fd, O_CLOEXEC) < 0)
@@ -1427,8 +1433,9 @@ static void taffy_launch_run(const char* filepath, struct load_results* lr)
 			exit(1);
 		}
 		close(tmp);
-		launch.root_fd = fd;
+		root_fd = fd;
 	}
+	launch.root_fd = root_fd;
 
 	launch.kernfd = lr->kernfd;
 	launch.elf_calls = &_elfcalls;
@@ -1453,12 +1460,19 @@ static void taffy_launch_run(const char* filepath, struct load_results* lr)
 		fprintf(stderr, "mldr: " TAFFY_LAUNCH_ENV ": the launcher returned %d after activating %s\n", err, filepath);
 		abort();
 	}
+	// a decline after any activate() call fails the spawn (taffy_launch.h): a call that failed in activate_image() has
+	// already written the launcher's stack top and image into mldr_load_results, where mldr's own load would use them
+	if (err == TAFFY_LAUNCH_DECLINED && taffy_launch_activate_called)
+	{
+		fprintf(stderr, "mldr: " TAFFY_LAUNCH_ENV ": the launcher declined %s after calling activate()\n", filepath);
+		exit(1);
+	}
 	if (err == TAFFY_LAUNCH_DECLINED)
 	{
-		if (launch.root_fd >= 0)
+		if (root_fd >= 0)
 		{
-			close(launch.root_fd);
-			socket_bitmap_put(&socket_bitmap, launch.root_fd);
+			close(root_fd);
+			socket_bitmap_put(&socket_bitmap, root_fd);
 		}
 		dlclose(taffy_launch_lib);
 		taffy_launch_lib = NULL;

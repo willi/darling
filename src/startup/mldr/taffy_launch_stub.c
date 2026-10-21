@@ -3,6 +3,8 @@
 // - "fail": returns ENOEXEC (XNU's 8) without activating. The parent's posix_spawn() should get that error.
 // - "decline": reads the executable's header, as a launcher deciding whether to run it would, and declines it
 //   (TAFFY_LAUNCH_DECLINED). mldr should then load and run the program itself.
+// - "activate-decline": calls activate() with version 0, which mldr refuses, then declines. mldr should fail the
+//   spawn: a launcher that has called activate() may no longer decline.
 // - "run": checks what mldr handed over, activates, and exits with the number of failed checks. Each failed check
 //   prints a "not ok" line, which the test's run-all.sh picks up.
 // Like a real launcher, it refuses a handoff of another version or size (taffy_launch.h's lockstep rule).
@@ -75,6 +77,13 @@ int taffy_launch_darling(const struct taffy_launch_darling* l)
 		if (fd >= 0)
 			close(fd);
 		return n == sizeof(magic) ? TAFFY_LAUNCH_DECLINED : XNU_ENOEXEC;
+	}
+	if (l->argc >= 2 && strcmp(l->argv[1], "activate-decline") == 0)
+	{
+		struct taffy_launch_activation a;
+		memset(&a, 0, sizeof(a));
+		(void) l->activate(&a);
+		return TAFFY_LAUNCH_DECLINED;
 	}
 
 	check(l->argc == 2 && l->argv[2] == NULL && strcmp(l->argv[1], "run") == 0,

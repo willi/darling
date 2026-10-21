@@ -10,6 +10,8 @@
 //   over (argv, envp, the vchroot, kernfd, elf_calls, the commpage), activates, and exits with its number of failures.
 // - to the stand-in with "decline": the stand-in declines the image (TAFFY_LAUNCH_DECLINED), and mldr loads and runs
 //   it itself. The child prints its argv and environment and exits 42.
+// - to the stand-in with "activate-decline": the stand-in calls activate() (refused) and then declines. posix_spawn()
+//   fails with EBADEXEC: a launcher that has called activate() may no longer decline.
 // TAFFY_LAUNCH is a Linux path, which mldr dlopen()s. Real use needs an absolute one (taffy_launch.h); this test can't
 // name its own directory as a Linux path, so it runs its children in the stand-in's directory, which is also their
 // Linux working directory, and gives a path relative to it.
@@ -135,6 +137,9 @@ int main(int argc, char** argv)
 	check(strcmp(out, want) == 0, "it runs with its own argv, and an environment that keeps TAFFY_LAUNCH", 0);
 	if (strcmp(out, want) != 0)
 		printf("#   got: %s#   want: %s", out, want);
+
+	err = spawn(self, stub, "activate-decline", &status, NULL, 0);
+	check(err == EBADEXEC, "a launcher that called activate() can't decline: the spawn fails", err ? err : status);
 
 	return failed;
 }

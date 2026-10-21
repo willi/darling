@@ -83,7 +83,8 @@ struct taffy_launch_range {
 
 #define TAFFY_LAUNCH_DARLING_VERSION 1
 
-// The struct, every pointer in it, and everything they point to stay valid for the life of the process.
+// The struct, every pointer in it, and everything they point to stay valid for the life of the process, unless the
+// launcher declines (TAFFY_LAUNCH_DECLINED).
 struct taffy_launch_darling {
 	uint32_t version; // TAFFY_LAUNCH_DARLING_VERSION
 	uint32_t size;    // sizeof(struct taffy_launch_darling)
@@ -105,7 +106,7 @@ struct taffy_launch_darling {
 	// The Darwin root as a Linux path: the vchroot, or for darlingserver's first process (launchd, started with
 	// __mldr_DYLD_ROOT_PATH) the path that variable names; NULL with neither. root_fd is the same directory as an
 	// O_PATH descriptor, or -1. mldr places it at the top of the descriptor table, where its own sockets are, and it
-	// stays open (close-on-exec) for the life of the process.
+	// stays open (close-on-exec) for the life of the process, unless the launcher declines: mldr then closes it.
 	const char* root_path;
 	uint64_t root_path_length;
 	int32_t root_fd;
@@ -131,7 +132,7 @@ struct taffy_launch_darling {
 	// mldr called the launcher on (its RPCs use that thread's socket), after everything that can fail and before the
 	// jump. Before it, the launcher creates no threads, changes no signal dispositions and never dup2()s onto a
 	// descriptor it wasn't given. It returns 0, or -1 with a message on stderr, after which the launcher returns an
-	// error.
+	// error (an XNU errno: after any activate() call, mldr fails a TAFFY_LAUNCH_DECLINED too).
 	int (*activate)(const struct taffy_launch_activation* activation);
 };
 
@@ -140,12 +141,20 @@ enum {
 	// so neither an XNU errno nor a negated Linux one: a launcher's stray `return -1` or `return -errno` still fails
 	// the spawn.
 	//
-	// Declining is a contract: the launcher has called neither activate() nor anything with a lasting effect. It has
-	// left no descriptor open, mapped or unmapped nothing, and changed no protection, signal disposition or handler,
-	// environment variable, argv string, TLS or mldr state. It may have opened and read the executable, and closed it
-	// again. mldr then closes root_fd, dlclose()s the launcher, and loads the image as it does without TAFFY_LAUNCH,
-	// in the address space it has already set up. TAFFY_LAUNCH stays in the program's environment, so its children
-	// go to the launcher again. The one difference: mldr has checked in and can no longer re-execute as mldr32, so a
+	// Declining is a contract. The launcher has not called activate() (mldr fails the spawn if it has, even when the
+	// call was refused), and it has left nothing the program could notice:
+	// - no descriptor open;
+	// - no mapping it made itself left in place, and none of mldr's (the ranges in `mapped`) touched. The mappings of
+	//   its own load and of its allocator may stay, and thread-locals it leaves may keep it loaded;
+	// - no protection, signal disposition or handler, cwd, umask, rlimit or prctl() setting (the process name
+	//   included) changed;
+	// - no environment variable, argv string or anything of mldr's (this struct included) changed;
+	// - nothing written to stdout or stderr: every non-simulator program started under TAFFY_LAUNCH would carry it.
+	// It may open, read and close the executable, and anything else it only reads.
+	//
+	// mldr then closes root_fd, dlclose()s the launcher, and loads the image as it does without TAFFY_LAUNCH, in the
+	// address space it has already set up. TAFFY_LAUNCH stays in the program's environment, so its children go to the
+	// launcher again. The one difference: mldr has checked in and can no longer re-execute as mldr32, so a
 	// 32-bit image fails with EBADARCH (as XNU since macOS 10.15, and Darling without mldr32, answer).
 	TAFFY_LAUNCH_DECLINED = -0x10000,
 };
