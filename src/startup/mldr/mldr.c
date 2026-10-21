@@ -330,7 +330,11 @@ int main(int argc, char** argv, char** envp)
 
 #ifndef __i386__
 	if (taffy_launch_on)
+	{
+		// returns only when the launcher declines the image: mldr then loads it itself, in the space it has set up
 		taffy_launch_run(filename, &mldr_load_results);
+		load(filename, 0, false, mldr_load_results.argv, &mldr_load_results);
+	}
 #endif
 
 	if (mldr_load_results._32on64)
@@ -621,6 +625,16 @@ static void reexec32(char** argv)
 {
 	char selfpath[1024];
 	ssize_t len;
+
+#ifndef __i386__
+	// a TAFFY_LAUNCH launcher declined the image after mldr checked in and rewrote argv and envp (taffy_launch.h)
+	if (taffy_launch_on)
+	{
+		spawn_error = XNU_EBADARCH;
+		fprintf(stderr, "Cannot re-execute as 32-bit process: " TAFFY_LAUNCH_ENV " is set\n");
+		exit(1);
+	}
+#endif
 
 	len = readlink("/proc/self/exe", selfpath, sizeof(selfpath)-3);
 	// exit(), not abort(): the parent waiting in posix_spawn() gets the error
@@ -1052,6 +1066,12 @@ static void redraw_layout(char** argv, const char* what)
 
 // May exec mldr again (redraw_layout()): nothing above it in load64()/load32() may have side effects.
 static void setup_space(struct load_results* lr, bool is_64_bit) {
+	static bool done = false;
+	// load64() after a TAFFY_LAUNCH launcher declined: taffy_launch_prepare() has set the space up
+	if (done)
+		return;
+	done = true;
+
 	if (!commpage_setup(is_64_bit)) {
 		redraw_layout(lr->argv, "the commpage");
 		fprintf(stderr, "Cannot map the commpage at %#lx: something else is there\n", commpage_address(is_64_bit));
@@ -1273,19 +1293,20 @@ static void vchroot_unexpand_interpreter(struct load_results* lr) {
 };
 
 #ifndef __i386__
+static void* taffy_launch_lib = NULL;
 static taffy_launch_darling_fn taffy_launch_entry = NULL;
 // the Linux path the launcher was asked to start, kept for activate(): main()'s copy lives on the abandoned stack
 static char taffy_launch_filename[4096];
 static bool taffy_launch_activated = false;
 
 // TAFFY_LAUNCH: load64()'s set-up without the image (the address space, the check-in, the vchroot), then the
-// launcher library. Any failure here is fatal: mldr never falls back to loading the image itself.
+// launcher library. Any failure here is fatal: mldr loads the image itself only when the launcher declines it.
 static void taffy_launch_prepare(const char* library, struct load_results* lr)
 {
 	// may exec mldr again for a new layout, so it comes first, as in load64()
 	setup_space(lr, true);
 
-	void* lib = dlopen(library, RTLD_NOW | RTLD_LOCAL);
+	void* lib = taffy_launch_lib = dlopen(library, RTLD_NOW | RTLD_LOCAL);
 	if (lib == NULL)
 	{
 		fprintf(stderr, "mldr: " TAFFY_LAUNCH_ENV ": cannot load %s: %s\n", library, dlerror());
@@ -1347,7 +1368,8 @@ static uint32_t taffy_launch_mapped(struct load_results* lr, struct taffy_launch
 	return n;
 }
 
-// Hands the process to the launcher. Never returns: when the launcher fails, mldr exits with its error.
+// Hands the process to the launcher. Returns only when the launcher declines the image, with what mldr gave it undone;
+// when the launcher fails, mldr exits with its error.
 static void taffy_launch_run(const char* filepath, struct load_results* lr)
 {
 	// static: argv, envp and everything reachable from the struct must outlive this frame (taffy_launch.h)
@@ -1430,6 +1452,18 @@ static void taffy_launch_run(const char* filepath, struct load_results* lr)
 	{
 		fprintf(stderr, "mldr: " TAFFY_LAUNCH_ENV ": the launcher returned %d after activating %s\n", err, filepath);
 		abort();
+	}
+	if (err == TAFFY_LAUNCH_DECLINED)
+	{
+		if (launch.root_fd >= 0)
+		{
+			close(launch.root_fd);
+			socket_bitmap_put(&socket_bitmap, launch.root_fd);
+		}
+		dlclose(taffy_launch_lib);
+		taffy_launch_lib = NULL;
+		taffy_launch_entry = NULL;
+		return;
 	}
 	// the launcher's XNU errno goes to the parent's posix_spawn() (spawn_pipe_fail(), at exit)
 	if (err > 0)

@@ -1,6 +1,8 @@
 // A stand-in launcher for tests/src/taffy_launch.c (mldr's TAFFY_LAUNCH hook, taffy_launch.h). mldr loads it into the
 // child. What it does depends on the child's argv[1]:
 // - "fail": returns ENOEXEC (XNU's 8) without activating. The parent's posix_spawn() should get that error.
+// - "decline": reads the executable's header, as a launcher deciding whether to run it would, and declines it
+//   (TAFFY_LAUNCH_DECLINED). mldr should then load and run the program itself.
 // - "run": checks what mldr handed over, activates, and exits with the number of failed checks. Each failed check
 //   prints a "not ok" line, which the test's run-all.sh picks up.
 // Like a real launcher, it refuses a handoff of another version or size (taffy_launch.h's lockstep rule).
@@ -65,6 +67,15 @@ int taffy_launch_darling(const struct taffy_launch_darling* l)
 		return XNU_ENOEXEC;
 	if (l->argc >= 2 && strcmp(l->argv[1], "fail") == 0)
 		return XNU_ENOEXEC;
+	if (l->argc >= 2 && strcmp(l->argv[1], "decline") == 0)
+	{
+		uint32_t magic = 0;
+		int fd = open(l->executable_path, O_RDONLY | O_CLOEXEC);
+		ssize_t n = fd < 0 ? -1 : read(fd, &magic, sizeof(magic));
+		if (fd >= 0)
+			close(fd);
+		return n == sizeof(magic) ? TAFFY_LAUNCH_DECLINED : XNU_ENOEXEC;
+	}
 
 	check(l->argc == 2 && l->argv[2] == NULL && strcmp(l->argv[1], "run") == 0,
 		"argv is the program's own, without mldr's argv[0]");

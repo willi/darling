@@ -12,14 +12,15 @@
  *
  * mldr then dlopen()s the library and calls TAFFY_LAUNCH_DARLING_ENTRY with a struct taffy_launch_darling. It doesn't map
  * the executable and doesn't load Darling's dyld: the launcher maps the executable and dyld, builds the initial stack
- * and apple[], and jumps. On the way, the launcher calls activate() exactly once, after which nothing may fail.
+ * and apple[], and jumps. On the way, the launcher calls activate() exactly once, after which nothing may fail. Or it
+ * declines an image it doesn't run (TAFFY_LAUNCH_DECLINED), and mldr loads that image itself.
  *
  * Scope. TAFFY_LAUNCH must be an absolute Linux path: every process inherits it with its own working directory, so a
  * relative one fails every exec from another directory. It reaches a child only through the environment: mldr leaves
- * it in envp, and every Mach-O exec whose environment carries it goes to the launcher, with no fallback (Darling's own
- * programs too, if darlingserver's environment has it). An exec whose caller builds its own environment without it
- * (an explicit envp to posix_spawn() or execve(), `env -i`, a launchd job's EnvironmentVariables) is loaded by mldr
- * itself, as without this hook.
+ * it in envp, and every Mach-O exec whose environment carries it goes to the launcher (Darling's own programs too, if
+ * darlingserver's environment has it), which runs it, fails it, or declines it. An exec whose caller builds its own
+ * environment without it (an explicit envp to posix_spawn() or execve(), `env -i`, a launchd job's
+ * EnvironmentVariables) is loaded by mldr itself, as without this hook.
  *
  * Versions. The two sides are built and pinned together, so both structs are lockstep: a reader accepts exactly the
  * version and size it was built with and refuses anything else (mldr fails activate(); the launcher returns ENOEXEC).
@@ -134,9 +135,25 @@ struct taffy_launch_darling {
 	int (*activate)(const struct taffy_launch_activation* activation);
 };
 
+enum {
+	// The launcher's return for an image it leaves to mldr (a program that isn't the simulator's, say). Below -4095,
+	// so neither an XNU errno nor a negated Linux one: a launcher's stray `return -1` or `return -errno` still fails
+	// the spawn.
+	//
+	// Declining is a contract: the launcher has called neither activate() nor anything with a lasting effect. It has
+	// left no descriptor open, mapped or unmapped nothing, and changed no protection, signal disposition or handler,
+	// environment variable, argv string, TLS or mldr state. It may have opened and read the executable, and closed it
+	// again. mldr then closes root_fd, dlclose()s the launcher, and loads the image as it does without TAFFY_LAUNCH,
+	// in the address space it has already set up. TAFFY_LAUNCH stays in the program's environment, so its children
+	// go to the launcher again. The one difference: mldr has checked in and can no longer re-execute as mldr32, so a
+	// 32-bit image fails with EBADARCH (as XNU since macOS 10.15, and Darling without mldr32, answer).
+	TAFFY_LAUNCH_DECLINED = -0x10000,
+};
+
 // Never returns on success. On failure it returns the XNU errno for the parent's posix_spawn() (ENOEXEC 8,
-// EBADARCH 86, EBADMACHO 88, ENOMEM 12, and so on), after writing the reason to stderr; mldr then exits. A launcher
-// that returns after a successful activate() has already let the parent go on: mldr aborts.
+// EBADARCH 86, EBADMACHO 88, ENOMEM 12, and so on), after writing the reason to stderr; mldr then exits. It returns
+// TAFFY_LAUNCH_DECLINED for an image it leaves to mldr. A launcher that returns anything after a successful
+// activate() has already let the parent go on: mldr aborts.
 typedef int (*taffy_launch_darling_fn)(const struct taffy_launch_darling* launch);
 
 #if defined(__x86_64__)
