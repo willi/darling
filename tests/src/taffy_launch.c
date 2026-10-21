@@ -3,13 +3,14 @@
 // to mldr's own loading.
 //
 // It spawns itself with TAFFY_LAUNCH set:
-// - to a library that doesn't exist: posix_spawn() fails, and nothing runs.
+// - to a library that doesn't exist: posix_spawn() fails with EBADEXEC, and nothing runs.
 // - to the stand-in launcher (src/startup/mldr/taffy_launch_stub.c) with argv[1] "fail": posix_spawn() returns
 //   the launcher's error, ENOEXEC.
 // - to the stand-in with "run": posix_spawn() succeeds, and the child exits 0. The stand-in checks what mldr handed
 //   over (argv, envp, the vchroot, kernfd, elf_calls, the commpage), activates, and exits with its number of failures.
-// TAFFY_LAUNCH is a Linux path, which mldr dlopen()s. The stand-in is installed next to this test, so the children
-// get a path relative to this directory, which is also their Linux working directory.
+// TAFFY_LAUNCH is a Linux path, which mldr dlopen()s. Real use needs an absolute one (taffy_launch.h); this test can't
+// name its own directory as a Linux path, so it runs its children in the stand-in's directory, which is also their
+// Linux working directory, and gives a path relative to it.
 //
 // Prints one "ok"/"not ok" line per check; the exit status is the number of failed checks.
 
@@ -80,13 +81,15 @@ int main(int argc, char** argv)
 	}
 
 	int status;
-	int err = spawn(self, "./taffy_launch_missing.so", "run", &status);
-	check(err != 0, "a launcher library that doesn't exist fails the spawn", err);
+	const char* missing = "./taffy_launch_missing.so";
+	const char* stub = "./taffy_launch_stub.so";
+	int err = spawn(self, missing, "run", &status);
+	check(err == EBADEXEC, "a launcher library that doesn't exist fails the spawn with EBADEXEC", err);
 
-	err = spawn(self, "./taffy_launch_stub.so", "fail", &status);
+	err = spawn(self, stub, "fail", &status);
 	check(err == ENOEXEC, "the launcher's error is posix_spawn()'s", err);
 
-	err = spawn(self, "./taffy_launch_stub.so", "run", &status);
+	err = spawn(self, stub, "run", &status);
 	check(err == 0 && status == 0, "the launcher runs with what mldr handed over, and activates", err ? err : status);
 
 	return failed;
