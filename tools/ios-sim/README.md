@@ -62,7 +62,9 @@ and `DYLD_FALLBACK_LIBRARY_PATH` (the runtime's `System/Library/Frameworks` and 
 `/Library/Developer/CoreSimulator/Caches/dyld/<sw_vers -buildVersion>/<SIM_RUNTIME_IDENTIFIER>.<build>/`. dyld_sim
 takes a cache from the runtime root's own `System/Library/Caches/com.apple.dyld` first, then from that directory, and
 with it set never from the prefix's `/System/Library/Caches`. Darling builds no cache there, so a device runs without
-one unless its runtime root carries one. `SIM_DYLD_SHARED_CACHE_DIR=` (set, empty) leaves the variable out.
+one unless its runtime root carries one. `SIM_DYLD_SHARED_CACHE_DIR=` (set, empty) leaves the variable out. dyld_sim
+maps the cache with `MAP_FIXED` at its fixed addresses, where Linux can have put the stack; mldr keeps those ranges
+free (`src/startup/mldr/shared_region.c`) only when the cache and the runtime root are under `/Volumes/SystemRoot`.
 `Child` also has the rest of a Mac's keys, with the values and paths of the `launchd_bootstrap.plist` CoreSimulator 1051.55
 writes for an iOS 26.5 (23F77) iPhone 16, with the device's own data directory, name, UDID and type
 (`SIM_DEVICE_TYPE_NAME`, and `SIM_CORESIMULATOR_VERSION` for the version, in simdevice.sh). One of them is more than

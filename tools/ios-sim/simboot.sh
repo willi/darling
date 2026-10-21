@@ -111,7 +111,9 @@ x() {
 # System/Library/Caches/com.apple.dyld first, then from this directory, and with this set never from the prefix's
 # /System/Library/Caches (dyld's CacheFinder). Darling builds no cache here, so a device has one only if its runtime
 # root carries one. SIM_DYLD_SHARED_CACHE_DIR set and empty leaves the variable out, so dyld_sim looks in the prefix's
-# /System/Library/Caches after the runtime root's
+# /System/Library/Caches after the runtime root's. mldr keeps the cache's ranges free of the stack and other mappings
+# (src/startup/mldr/shared_region.c) only for a cache under /Volumes/SystemRoot, with the runtime root there too: a
+# cache in this default directory, or in the prefix's, isn't reserved for
 if [ -z "${SIM_DYLD_SHARED_CACHE_DIR+set}" ]; then
 	host_build=$(sw_vers -buildVersion) || host_build=
 	if [ -z "$host_build" ]; then

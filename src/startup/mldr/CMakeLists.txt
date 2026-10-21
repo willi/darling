@@ -19,6 +19,7 @@ target_include_directories(mldr_dserver_rpc PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/
 set(mldr_sources
 	mldr.c
 	commpage.c
+	shared_region.c
 	elfcalls/elfcalls.c
 	elfcalls/threads.c
 )
